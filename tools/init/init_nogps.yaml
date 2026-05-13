@@ -1,0 +1,50 @@
+# Sample initialization config for theseus-ekf-patches no-GPS bootstrap.
+#
+# All values come from the companion's first valid pose fix at startup.
+# Edit before each flight (or generate from your nav pipeline).
+
+mavlink:
+  # MAVLink endpoint to the autopilot.
+  # SITL:        tcp:127.0.0.1:5760
+  # USB serial:  /dev/ttyACM0 (or COM3 on Windows)
+  # Telem radio: /dev/ttyUSB0
+  connection: tcp:127.0.0.1:5760
+  baud: 57600                   # ignored for tcp/udp
+  source_system: 254            # GCS-side sysid
+  target_system: 1              # autopilot sysid (1 is the default)
+
+# Reference frame the EKF uses for its local NE math.
+# Doesn't have to be exact — a few km off is fine; baro is the height ref.
+# Use somewhere near where you actually are.
+origin:
+  lat:  -35.363261              # degrees
+  lon:  149.165230
+  alt:  584.0                   # metres MSL
+
+# Plane's actual position on the ground at startup (from your companion).
+# This is what the EKF state gets reset to. Pick from your nav pipeline's
+# best initial estimate. Accuracy ~5 m is fine for ground init.
+ground_position:
+  lat:  -35.363261
+  lon:  149.165230
+  accuracy_m: 5.0
+
+# Current wind. If you don't know, send (0, 0) — EKF will live with that
+# but velocity tracking will degrade in flight.
+wind:
+  speed_ms:  0.0                # m/s
+  direction_deg: 0.0            # 0=from N, clockwise (standard met)
+
+# Timing between commands. Defaults are conservative for slow links.
+delays_s:
+  after_origin: 1.0
+  after_home: 1.0
+  after_position: 2.0           # gives EKF time to emit "aiding from external pos"
+  after_wind: 1.0
+
+# Optional: verify each step by waiting for the corresponding STATUSTEXT.
+# Set false if your link drops STATUSTEXT messages.
+verify:
+  bootstrap_statustext: true
+  wind_statustext: true
+  timeout_s: 5.0
