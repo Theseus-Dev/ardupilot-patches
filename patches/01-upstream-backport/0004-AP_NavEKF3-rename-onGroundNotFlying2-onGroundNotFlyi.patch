@@ -1,0 +1,28 @@
+From 1f500c933f5542810e4fcc5608c74f98b3d85216 Mon Sep 17 00:00:00 2001
+From: Andy Piper <github@andypiper.com>
+Date: Wed, 1 Apr 2026 15:59:02 +0100
+Subject: [PATCH] AP_NavEKF3: rename onGroundNotFlying2 -> onGroundNotFlying
+
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index c2917ae844..89f793a4ca 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -707,9 +707,9 @@ void NavEKF3_core::SelectVelPosFusion()
+     // when the vehicle is being moved, and takeoff_expected for armed-on-ground.
+     // Gate behind fuseHgtData to limit fusion rate to baro rate (~10Hz) and avoid
+     // overconstraining the filter by fusing at IMU rate.
+-    const bool onGroundNotFlying2 = onGroundNotMoving || dal.get_takeoff_expected();
++    const bool onGroundNotFlying = onGroundNotMoving || dal.get_takeoff_expected();
+ 
+-    if (fuseHgtData && PV_AidingMode != AID_NONE && onGroundNotFlying2) {
++    if (fuseHgtData && PV_AidingMode != AID_NONE && onGroundNotFlying) {
+         // Check if we have recent velocity aiding from any source
+         const uint32_t velAidTimeout_ms = 1000;
+         const bool haveRecentGpsVel = (imuSampleTime_ms - lastVelPassTime_ms < velAidTimeout_ms);
+-- 
+2.39.2 (Apple Git-143)
+

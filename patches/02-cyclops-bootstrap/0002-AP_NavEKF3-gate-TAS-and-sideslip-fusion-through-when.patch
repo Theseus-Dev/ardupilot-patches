@@ -1,0 +1,92 @@
+From 60a4ed00cbcfb4eb41c2346352a22f9fb96c72af Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Wed, 13 May 2026 16:35:57 +0300
+Subject: [PATCH 2/2] AP_NavEKF3: gate TAS and sideslip fusion through when
+ _has_forced_position
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+After the EK3_OPTIONS bit 3 (ExtPosCanBootstrap) external position
+bootstrap transitions the filter to AID_ABSOLUTE, the EKF needs to be
+able to estimate velocity between companion-supplied position fixes.
+Without GPS or any other velocity-bearing sensor, the only available
+constraints are airspeed (gives |velocity_NED - wind_NED|) and the
+zero-sideslip assumption (gives velocity direction relative to wind).
+
+Stock behaviour gates both TAS fusion and sideslip fusion on
+!inhibitWindStates, and setWindMagStateLearningMode keeps wind states
+inhibited until |velocity_NED| > 5 m/s — which itself requires those
+fusion paths to be running. This circular gate prevents either fusion
+from engaging post-bootstrap when there is no real velocity source.
+
+Relax both gates to also fire when _has_forced_position && inFlight,
+even while wind states remain inhibited:
+
+  - SelectTasFusion: airspeed innovation updates velocity states.
+    Wind state rows of the Kalman gain are zeroed by inhibitWindStates
+    elsewhere, so wind state is not corrupted while inhibited. Once
+    velocity crosses the 5 m/s threshold, wind learning un-inhibits
+    naturally and the full TAS fusion behaviour resumes.
+
+  - SelectBetaDragFusion: sideslip fusion runs, marked f_required so
+    it corrects all states (including velocity) rather than only wind.
+
+Importantly, the FuseAirspeed innovation consistency gate is NOT
+bypassed. If the pitot fails (blockage, water, electrical fault), bad
+airspeed readings still get rejected by the innovation check and the
+EKF preserves its only diagnostic for sensor failure under GPS denial.
+
+This patch is part of the Theseus Cyclops EKF integration patch set.
+---
+ .../AP_NavEKF3/AP_NavEKF3_AirDataFusion.cpp   | 25 +++++++++++++++----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_AirDataFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_AirDataFusion.cpp
+index c188681f0e..f9986fa618 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_AirDataFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_AirDataFusion.cpp
+@@ -205,9 +205,17 @@ void NavEKF3_core::SelectTasFusion()
+     // get true airspeed measurement
+     readAirSpdData();
+ 
+-    // if the filter is initialised, wind states are not inhibited and we have data to fuse, then perform TAS fusion
+-
+-    if (tasDataToFuse && statesInitialised && !inhibitWindStates) {
++    // if the filter is initialised, wind states are not inhibited and we have data to fuse, then perform TAS fusion.
++    //
++    // External-position-bootstrap path: also allow TAS fusion when _has_forced_position
++    // is set and the vehicle is in flight, even while wind states are still inhibited.
++    // Wind state Kalman gain rows are zeroed elsewhere by inhibitWindStates, so the
++    // airspeed innovation only updates velocity states. This breaks the stock chicken-
++    // and-egg gate where wind learning needs |velocity|>5 m/s and velocity growth needs
++    // airspeed fusion. Once velocity crosses the threshold, wind un-inhibits naturally
++    // and full wind learning resumes.
++
++    if (tasDataToFuse && statesInitialised && (!inhibitWindStates || (_has_forced_position && inFlight))) {
+         FuseAirspeed();
+         tasDataToFuse = false;
+         prevTasStep_ms = imuSampleTime_ms;
+@@ -238,10 +246,17 @@ void NavEKF3_core::SelectBetaDragFusion()
+     bool is_dead_reckoning = ((imuSampleTime_ms - lastGpsPosPassTime_ms) > frontend->deadReckonDeclare_ms) &&
+                              ((imuSampleTime_ms - lastVelPassTime_ms) > frontend->deadReckonDeclare_ms);
+     const bool noYawSensor = !use_compass() && !using_noncompass_for_yaw();
+-    const bool f_required = (noYawSensor && (frontend->_betaMask & (1<<1))) || is_dead_reckoning;
++    // External-position-bootstrap: airspeed + sideslip are the only velocity constraints
++    // when there is no GPS, so mark sideslip fusion as required when forced position is
++    // active and we are in flight. This causes the fusion to update all states (including
++    // velocity), not just wind.
++    const bool f_required = (noYawSensor && (frontend->_betaMask & (1<<1))) || is_dead_reckoning ||
++                            (_has_forced_position && inFlight);
+ 
+     // set true when sideslip fusion is feasible (requires zero sideslip assumption to be valid and use of wind states)
+-    const bool f_beta_feasible = (assume_zero_sideslip() && !inhibitWindStates);
++    // External-position-bootstrap: also feasible when forced position is active in flight,
++    // even with wind states inhibited (same chicken-and-egg rationale as TAS fusion).
++    const bool f_beta_feasible = (assume_zero_sideslip() && (!inhibitWindStates || (_has_forced_position && inFlight)));
+ 
+     // use synthetic sideslip fusion if feasible, required and enough time has lapsed since the last fusion
+     if (f_beta_feasible && f_timeTrigger) {
+-- 
+2.39.2 (Apple Git-143)
+

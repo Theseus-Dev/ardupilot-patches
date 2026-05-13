@@ -1,0 +1,41 @@
+From 78262d8172323028d782b82cda7731a628d9145d Mon Sep 17 00:00:00 2001
+From: Andy Piper <github@andypiper.com>
+Date: Tue, 17 Mar 2026 11:50:04 +0000
+Subject: [PATCH] AP_NavEKF3: inhibit accel bias learning when on ground and
+ moving
+
+When the vehicle is on the ground and being moved (e.g. carried on a
+utility belt or on a moving platform), inhibit all accelerometer bias
+learning. Previously only the gravity-alignment check was used, which
+allowed the gravity-aligned axis to learn biases from external motion.
+Adding the onGroundNotMoving check ensures no bias learning occurs
+during ground movement, preventing incorrect biases that could cause
+velocity drift after takeoff.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_core.cpp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp
+index e4060549d7..aa9ef7cac1 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp
+@@ -1166,8 +1166,14 @@ void NavEKF3_core::CovariancePrediction(Vector3F *rotVarVecPtr)
+         for (uint8_t stateIndex = 13; stateIndex <= 15; stateIndex++) {
+             const uint8_t index = stateIndex - 13;
+ 
+-            // Don't attempt learning of IMU delta velocty bias if on ground and not aligned with the gravity vector
+-            const bool is_bias_observable = (fabsF(prevTnb[index][2]) > 0.8f) || !onGround;
++            // Don't attempt learning of IMU delta velocity bias if on ground.
++            // In flight: all axes are observable from velocity/position aiding.
++            // On ground and stationary: only the gravity-aligned axis (Z for a level
++            // vehicle) is observable. XY biases remain unobservable until the vehicle
++            // accelerates horizontally in flight.
++            // On ground and moving (e.g. carried or on a boat): inhibit all axes
++            // to prevent learning biases from external motion accelerations.
++            const bool is_bias_observable = (fabsF(prevTnb[index][2]) > 0.8f && onGroundNotMoving) || !onGround;
+ 
+             if (!is_bias_observable && !dvelBiasAxisInhibit[index]) {
+                 // store variances to be reinstated wben learning can commence later
+-- 
+2.39.2 (Apple Git-143)
+

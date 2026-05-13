@@ -1,0 +1,36 @@
+From 72803124dad2e37efe1df4a453e8d51f0c92ca3c Mon Sep 17 00:00:00 2001
+From: Andy Piper <github@andypiper.com>
+Date: Tue, 17 Mar 2026 14:45:00 +0000
+Subject: [PATCH] AP_NavEKF3: clarify position noise fallback in zero velocity
+ fusion
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add comment explaining why _gpsHorizPosNoise is used as the fallback
+for position noise when fusing synthetic zero velocity — it is the
+only position noise parameter available regardless of aiding source.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index 29db931e6b..c2917ae844 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -788,8 +788,10 @@ void NavEKF3_core::FuseVelPosNED()
+             // Synthetic zero velocity in AID_RELATIVE or AID_ABSOLUTE mode when no
+             // velocity sensor data is available (e.g. GPS configured but not yet locked,
+             // or optical flow with no movement). Use 1 m/s noise for velocity — same
+-            // rationale as the AID_NONE case above. Position observations may still be
+-            // fused from real sensors so use their actual noise characteristics.
++            // rationale as the AID_NONE case above. Position noise uses actual sensor
++            // characteristics when available (extNav posErr, GPS accuracy), falling back
++            // to _gpsHorizPosNoise as a conservative default since it is the only
++            // position noise parameter available regardless of aiding source.
+             R_OBS[0] = sq(1.0f);
+             R_OBS[1] = R_OBS[0];
+             R_OBS[2] = R_OBS[0];
+-- 
+2.39.2 (Apple Git-143)
+

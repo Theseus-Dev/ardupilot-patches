@@ -1,0 +1,204 @@
+From 93e645f95291043b9f86a90ec041642929afa50c Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Wed, 13 May 2026 16:34:41 +0300
+Subject: [PATCH 1/2] AP_NavEKF3: external position bootstrap for AID_NONE ->
+ AID_ABSOLUTE
+
+Adds EK3_OPTIONS bit 3 'ExtPosCanBootstrap'. When set:
+
+1. LOCAL_POSITION_NED publishes from boot once SET_GPS_GLOBAL_ORIGIN
+   provides a valid origin, even while the filter is in AID_NONE. The
+   reported position is held at the origin by stock AID_NONE constant-
+   position fusion. This unblocks companion-computer position sources
+   (e.g. visual navigation) that need LPN to come up before they start
+   producing their own fixes.
+
+2. MAV_CMD_EXTERNAL_POSITION_ESTIMATE (43003), which currently rejects
+   in AID_NONE, is allowed to transition the filter to AID_ABSOLUTE
+   when the vehicle is in flight (inFlight=true). The bootstrap path
+   refreshes pos/vel/tas timeouts, opens velocity covariance so airspeed
+   and sideslip fusion can build velocity from scratch, and sets the
+   _has_forced_position flag.
+
+3. setAidingMode() refreshes lastGpsPosPassTime_ms every cycle while
+   _has_forced_position is set, preventing attAidLossCritical/posAidLoss-
+   Critical from tearing down AID_ABSOLUTE between companion fixes whose
+   cadence (e.g. ~20s for a 500m fix interval at 25 m/s) exceeds the
+   EKF's posRetryTime_ms.
+
+The bootstrap is gated on inFlight (rather than just !onGround) so that
+on-ground compass interference, pitot-cover effects, and pre-arm sensor
+states cannot be baked into the bootstrap. The first accepted external
+fix happens with the IMU in its flight motion regime.
+
+Default behaviour is unchanged. Setting EK3_OPTIONS bit 3 is required
+to enable the new path.
+
+This patch is part of the Theseus Cyclops EKF integration patch set.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3.cpp           |  4 +-
+ libraries/AP_NavEKF3/AP_NavEKF3.h             |  1 +
+ libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp   | 12 ++++++
+ libraries/AP_NavEKF3/AP_NavEKF3_Outputs.cpp   |  9 ++++
+ .../AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp    | 41 ++++++++++++++++++-
+ libraries/AP_NavEKF3/AP_NavEKF3_core.cpp      |  1 +
+ libraries/AP_NavEKF3/AP_NavEKF3_core.h        |  1 +
+ 7 files changed, 65 insertions(+), 4 deletions(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3.cpp b/libraries/AP_NavEKF3/AP_NavEKF3.cpp
+index 5fc33586a2..264eebf7cb 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3.cpp
+@@ -738,8 +738,8 @@ const AP_Param::GroupInfo NavEKF3::var_info2[] = {
+ 
+     // @Param: OPTIONS
+     // @DisplayName: Optional EKF behaviour
+-    // @Description: This controls optional EKF behaviour. Setting JammingExpected will change the EKF nehaviour such that if dead reckoning navigation is possible it will require the preflight alignment GPS quality checks controlled by EK3_GPS_CHECK and EK3_CHECK_SCALE to pass before resuming GPS use if GPS lock is lost for more than 2 seconds to prevent bad
+-    // @Bitmask: 0:JammingExpected
++    // @Description: This controls optional EKF behaviour. Setting JammingExpected will change the EKF nehaviour such that if dead reckoning navigation is possible it will require the preflight alignment GPS quality checks controlled by EK3_GPS_CHECK and EK3_CHECK_SCALE to pass before resuming GPS use if GPS lock is lost for more than 2 seconds to prevent bad. Setting ExtPosCanBootstrap allows MAV_CMD_EXTERNAL_POSITION_ESTIMATE (43003) to transition the filter from AID_NONE to AID_ABSOLUTE when the vehicle is in flight, enabling GPS-free navigation with a companion-computer position source. Also unblocks LOCAL_POSITION_NED publication on the ground once SET_GPS_GLOBAL_ORIGIN is provided so the companion can come up before takeoff.
++    // @Bitmask: 0:JammingExpected, 3:ExtPosCanBootstrap
+     // @User: Advanced
+     AP_GROUPINFO("OPTIONS",  11, NavEKF3, _options, 0),
+ 
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3.h b/libraries/AP_NavEKF3/AP_NavEKF3.h
+index 415d7424a4..d46d91eada 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3.h
+@@ -455,6 +455,7 @@ private:
+     // enum for processing options
+     enum class Options {
+         JammingExpected     = (1<<0),
++        ExtPosCanBootstrap  = (1<<3),  // External position estimate can bootstrap AID_NONE -> AID_ABSOLUTE
+     };
+ 
+ // Possible values for _flowUse
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+index 3eea5d16d2..99cca31ffe 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+@@ -313,6 +313,18 @@ void NavEKF3_core::setAidingMode()
+             break;
+         }
+         case AID_ABSOLUTE: {
++            // External-position-bootstrap keepalive: when the filter has been
++            // bootstrapped from an external position estimate, refresh the position
++            // pass time every cycle so attAidLossCritical/posAidLossCritical can't
++            // drop us back to AID_NONE between fixes. The companion's fix cadence
++            // (e.g. 500m / ~20s for typical Cyclops conop) is longer than the
++            // EKF's posRetryTime_ms timeouts, so without this keepalive a single
++            // fix gap would tear down the aiding mode and the bootstrap path is
++            // single-shot (only triggers from AID_NONE).
++            if (_has_forced_position) {
++                lastGpsPosPassTime_ms = imuSampleTime_ms;
++            }
++
+             // Find the minimum time without data required to trigger any check
+             uint16_t minTestTime_ms = MIN(frontend->tiltDriftTimeMax_ms, MIN(frontend->posRetryTimeNoVel_ms,frontend->posRetryTimeUseVel_ms));
+ 
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_Outputs.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_Outputs.cpp
+index cf3f841cde..4290896d1a 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_Outputs.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_Outputs.cpp
+@@ -258,6 +258,15 @@ bool NavEKF3_core::getPosNE(Vector2f &posNE) const
+     } else {
+         // In constant position mode the EKF position states are at the origin, so we cannot use them as a position estimate
+         if(validOrigin) {
++            // External-position-bootstrap path: if the option bit is set and the origin
++            // has been provided, publish the position state (held at the origin by AID_NONE
++            // constant-position fusion) so LOCAL_POSITION_NED consumers wake up before
++            // the in-air bootstrap. A companion-computer position source can then come up
++            // and start sending fixes via MAV_CMD_EXTERNAL_POSITION_ESTIMATE.
++            if (frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) {
++                posNE = (outputDataNew.position.xy() + public_origin.get_distance_NE_ftype(EKF_origin)).tofloat();
++                return true;
++            }
+             auto &gps = dal.gps();
+             if ((gps.status(selected_gps) >= AP_DAL_GPS::GPS_OK_FIX_2D)) {
+                 // If the origin has been set and we have GPS, then return the GPS position relative to the origin
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index 76435f5fc7..1c5ae2c651 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -190,9 +190,18 @@ void NavEKF3_core::ResetPosition(resetDataSource posResetSource)
+ // Returns true if the set was successful
+ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms)
+ {
++    // External-position-bootstrap path: when EK3_OPTIONS bit ExtPosCanBootstrap is set,
++    // allow a setLatLng call to transition the filter from AID_NONE to AID_ABSOLUTE if
++    // the vehicle is in flight. Gated on inFlight (not just !onGround) so on-ground
++    // compass/sensor effects can't be baked into the bootstrap state, and so that the
++    // first accepted fix happens with the IMU in its flight motion regime.
++    const bool bootstrap_allowed =
++        (frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) &&
++        validOrigin && PV_AidingMode == AID_NONE && inFlight;
++
+     if ((imuSampleTime_ms - lastGpsPosPassTime_ms) < frontend->deadReckonDeclare_ms ||
+-        (PV_AidingMode == AID_NONE)
+-        || !validOrigin) {
++        (PV_AidingMode == AID_NONE && !bootstrap_allowed) ||
++        !validOrigin) {
+         return false;
+     }
+ 
+@@ -220,6 +229,34 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
+     const Vector2F newPosNE = EKF_origin.get_distance_NE_ftype(loc) + stateStruct.velocity.xy() * delaySec;
+     ResetPositionNE(newPosNE.x,newPosNE.y);
+ 
++    // Keep lastKnownPositionNE in sync so AID_NONE constant-position fusion (if we
++    // ever fall back) holds at the externally-provided location rather than (0,0).
++    lastKnownPositionNE.x = newPosNE.x;
++    lastKnownPositionNE.y = newPosNE.y;
++
++    if (bootstrap_allowed) {
++        // Open the velocity covariance so the airspeed/sideslip fusion path can build
++        // velocity from scratch. On the first bootstrap, velocity state is whatever
++        // AID_NONE constant-position fusion left it at (~zero). _gpsHorizVelNoise's
++        // typical default is too tight to absorb large early innovations.
++        zeroRows(P,4,5);
++        zeroCols(P,4,5);
++        P[4][4] = sq(25.0f);
++        P[5][5] = sq(25.0f);
++
++        // Transition to AID_ABSOLUTE and refresh timeouts so the health checks in
++        // setAidingMode() don't immediately push us back to AID_NONE.
++        PV_AidingMode = AID_ABSOLUTE;
++        posTimeout = false;
++        velTimeout = false;
++        tasTimeout = false;
++        lastGpsPosPassTime_ms = imuSampleTime_ms;
++        lastVelPassTime_ms = imuSampleTime_ms;
++        _has_forced_position = true;
++
++        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "EKF3 IMU%u aiding from external pos", (unsigned)imu_index);
++    }
++
+     return true;
+ }
+ #endif // EK3_FEATURE_POSITION_RESET
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp
+index 0ec6abbe98..23fd007a1b 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_core.cpp
+@@ -242,6 +242,7 @@ void NavEKF3_core::InitialiseVariables()
+     velDotNEDfilt.zero();
+     lastKnownPositionNE.zero();
+     lastKnownPositionD = 0;
++    _has_forced_position = false;
+     prevTnb.zero();
+     memset(&P[0][0], 0, sizeof(P));
+     memset(&KH[0][0], 0, sizeof(KH));
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_core.h b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+index 1416888282..2656ff4255 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_core.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+@@ -1142,6 +1142,7 @@ private:
+     uint32_t ekfStartTime_ms;       // time the EKF was started (msec)
+     Vector2F lastKnownPositionNE;   // last known position
+     float lastKnownPositionD;       // last known height
++    bool _has_forced_position;      // true after a successful AID_NONE -> AID_ABSOLUTE bootstrap via external position estimate (EK3_OPTIONS bit 3)
+     uint32_t lastLaunchAccelTime_ms;
+     ftype velTestRatio;             // sum of squares of GPS velocity innovation divided by fail threshold
+     ftype posTestRatio;             // sum of squares of GPS position innovation divided by fail threshold
+-- 
+2.39.2 (Apple Git-143)
+

@@ -1,0 +1,123 @@
+# theseus-ekf-patches
+
+Patch series that allows the ArduPilot EKF3 to initialize and produce a
+useful position estimate without GPS, using `MAV_CMD_EXTERNAL_POSITION_ESTIMATE`
+(43003) from a companion computer (e.g. Theseus Cyclops visual navigation).
+
+## What it does
+
+Adds `EK3_OPTIONS` bit 3 (`ExtPosCanBootstrap`). When set:
+
+1. `LOCAL_POSITION_NED` publishes from boot once `SET_GPS_GLOBAL_ORIGIN` has
+   provided a valid origin, even while the EKF is in `AID_NONE`. This unblocks
+   companion software that needs LPN to come up before it can produce its own
+   fixes (eliminates the boot-time chicken-and-egg).
+
+2. `MAV_CMD_EXTERNAL_POSITION_ESTIMATE` is allowed to transition the filter
+   `AID_NONE → AID_ABSOLUTE` once the vehicle is in flight (`inFlight=true`).
+   Gated on `inFlight` rather than just `!onGround` to avoid baking compass
+   interference, pitot-cover effects, or pre-arm sensor states into the
+   bootstrap.
+
+3. Airspeed and synthetic-sideslip fusion are allowed to run after bootstrap
+   even while EKF3's wind states are still inhibited (which they are until
+   `|velocity_NED| > 5 m/s`). This breaks the chicken-and-egg gate where wind
+   un-inhibition needs velocity and velocity needs airspeed/sideslip fusion.
+   Wind learning resumes naturally once the velocity threshold is crossed.
+
+4. The position pass time is kept fresh every cycle while in bootstrapped
+   mode, so the EKF's internal `attAidLossCritical` / `posAidLossCritical`
+   timeouts don't tear down `AID_ABSOLUTE` between companion fixes whose
+   cadence exceeds the EKF's retry windows (~7–10 s).
+
+The TAS innovation consistency gate is **not** bypassed — pitot failure
+detection is preserved. If the airspeed sensor is reporting garbage, the
+gate rejects it and the EKF's health flags reflect the degradation.
+
+Default behaviour is unchanged unless `EK3_OPTIONS` bit 3 is set.
+
+## Patch series
+
+```
+patches/
+  01-upstream-backport/        # Master EKF3 ground/zero-vel hardening (PR #32396 + #32986)
+    0001-AP_NavEKF3-use-onGroundNotMoving-for-zero-velocity-f.patch
+    0002-AP_NavEKF3-inhibit-accel-bias-learning-when-on-groun.patch
+    0003-AP_NavEKF3-clarify-position-noise-fallback-in-zero-v.patch
+    0004-AP_NavEKF3-rename-onGroundNotFlying2-onGroundNotFlyi.patch
+    0005-AP_NavEKF3-constrain-fusingStationaryZeroVel-to-not-.patch
+    0006-AP_NavEKF3-gate-stationary-zero-velocity-fusion-on-i.patch
+  02-cyclops-bootstrap/        # New code for external-position bootstrap
+    0001-AP_NavEKF3-external-position-bootstrap-for-AID_NONE-.patch
+    0002-AP_NavEKF3-gate-TAS-and-sideslip-fusion-through-when.patch
+```
+
+## How to apply
+
+From a clean ArduPilot checkout at the target tag:
+
+```sh
+cd /path/to/ardupilot
+git checkout Plane-4.6.3
+git checkout -b theseus-cyclops-bootstrap
+
+for p in /path/to/theseus-ekf-patches/patches/01-upstream-backport/*.patch; do
+    git am --3way "$p"
+done
+for p in /path/to/theseus-ekf-patches/patches/02-cyclops-bootstrap/*.patch; do
+    git am --3way "$p"
+done
+
+git submodule update --init --recursive
+./waf configure --board <your-board>
+./waf plane
+```
+
+## MAVLink flow
+
+Expected sequence from a companion computer (e.g. Cyclops):
+
+| Stage | Command | Effect |
+|---|---|---|
+| Boot | `SET_GPS_GLOBAL_ORIGIN` (lat/lon) | Sets `validOrigin`. EKF starts publishing `LOCAL_POSITION_NED` at origin (0,0 NE). Companion can now come up. |
+| Pre-flight (ground) | none | EKF stays in `AID_NONE`. Companion fixes (if sent) are rejected. |
+| Takeoff | (Plane vehicle code flips `inFlight=true`) | Bootstrap becomes available. |
+| First fix post-takeoff | `MAV_CMD_EXTERNAL_POSITION_ESTIMATE` (43003) | Transitions to `AID_ABSOLUTE`. GCS message: `EKF3 IMUx aiding from external pos`. |
+| Cruise | `MAV_CMD_EXTERNAL_POSITION_ESTIMATE` at companion cadence | Standard position resets. Velocity interpolated via TAS + sideslip + IMU between fixes. |
+
+## Parameter to set on the vehicle
+
+```
+EK3_OPTIONS = 8     # bit 3 = ExtPosCanBootstrap
+```
+
+## Targeted versions
+
+| Branch | Status |
+|---|---|
+| Plane-4.6.3 | Verified — patches apply with one resolved conflict in 0001 (committed into the patch file), SITL Plane builds clean |
+| Plane-4.5.x | Not yet tested |
+| master | Not yet tested |
+
+For Plane-4.5.x, expect more conflicts in the upstream-backport series since
+the zero-velocity fusion infrastructure was added more recently.
+
+## Tradeoffs / known issues
+
+- Wind state is **not** frozen — it learns naturally once `|velocity| > 5 m/s`.
+  This adds wind-shift adaptivity at the cost of some bias-absorption risk
+  between fixes. For typical 500m / ~20s fix cadence, the absorbed drift is
+  bounded.
+- The TAS innovation gate is preserved (not bypassed). Recovery from a stuck
+  pitot eventually falls through to the existing `(tasTimeout && posTimeout)`
+  fallback path, which forces fusion through after the timeouts age.
+- `_has_forced_position` is a one-way flag: once set in a flight, it stays set
+  until the next EKF init. If real GPS becomes available mid-flight, this
+  patch does not clear the flag or revert to normal GPS-driven aiding.
+- No interaction tested with optical flow, beacon, or external-nav sources.
+  Behavior with those configured is undefined.
+
+## Related upstream PRs
+
+- [#32396](https://github.com/ArduPilot/ardupilot/pull/32396) — synthetic zero-velocity fusion (merged Apr 2026, master only)
+- [#32986](https://github.com/ArduPilot/ardupilot/pull/32986) — `!inFlight` gate on zero-vel fusion (open, andyp1per's fork)

@@ -1,0 +1,106 @@
+From 5538479b05224627f416aac2362eb674c713b55e Mon Sep 17 00:00:00 2001
+From: Andy Piper <github@andypiper.com>
+Date: Mon, 4 May 2026 16:32:04 +0100
+Subject: [PATCH] AP_NavEKF3: gate stationary zero-velocity fusion on !inFlight
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The two zero-velocity fusion blocks added in PR #32396 fire whenever
+onGroundNotMoving or dal.get_takeoff_expected() is true. The first half
+is sound (the movement check early-returns when !onGround), but the
+second is unsafe for Plane: Plane::set_takeoff_expected() asserts the
+flag whenever !is_flying() && armed && (throw_detected || throttle >
+throttle_cruise), and Plane::is_flying() is probabilistic — during
+aggressive maneuvers it can briefly drop below the 0.1 threshold
+mid-flight. The result is a transient takeoff_expected pulse on a
+vehicle that is actually flying at airspeed.
+
+When that pulse hits with no GPS/flow/body-vel aiding (e.g. dead
+reckoning), the new fusion injects velPosObs=(0,0,0) at 1 m/s noise.
+The EKF velocity state is yanked toward zero, FuseAirspeed produces a
+huge innovation that the wind state absorbs, and dead-reckoning
+position then drifts at the corrupt wind. Reproduces in SITL via
+test.Plane.GuidedAttitudeNoGPS (issue #32980): wind goes from 0.72/-0.09
+to 20/12 m/s in a 1 s window, post-DR position diverges by ~100 m
+versus the pre-PR-32396 trajectory.
+
+Gating on EKF onGround would be too tight: detectFlight() flips
+onGround false the moment motors arm, which excludes the Copter
+pre-liftoff case the fusion was designed for. Gate on !inFlight
+instead — that flag stays false through the armed-on-ground period
+and only goes true once the EKF has high certainty the vehicle is
+actually flying (Copter via altitude/range climb or time_flying_ms,
+Plane via highAirSpd/highGndSpd in detectFlight()).
+---
+ .../AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp    | 28 +++++++++++--------
+ libraries/AP_NavEKF3/AP_NavEKF3_core.h        |  3 ++
+ 2 files changed, 19 insertions(+), 12 deletions(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index 485a05f6240be..a8a3def16d504 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -517,6 +517,18 @@ void NavEKF3_core::CalculateVelInnovationsAndVariances(const Vector3F &velocity,
+     variances.z = P[6][6] + obs_data_chk;
+ }
+ 
++// Combines onGroundNotMoving (movement check, only valid when onGround is true)
++// and takeoff_expected (covers the armed-on-ground period before liftoff). Gated
++// on !inFlight because Plane can briefly assert takeoff_expected mid-flight (high
++// throttle + transient !is_flying()), and injecting zero velocity into a vehicle
++// that is actually flying corrupts EKF velocity, the wind state and dead
++// reckoning. onGround would be too tight a gate — it goes false the moment motors
++// arm, which excludes the legitimate Copter pre-liftoff case.
++bool NavEKF3_core::onGroundNotFlying() const
++{
++    return !inFlight && (onGroundNotMoving || dal.get_takeoff_expected());
++}
++
+ /********************************************************
+ *                   FUSE MEASURED_DATA                  *
+ ********************************************************/
+@@ -700,11 +712,7 @@ void NavEKF3_core::SelectVelPosFusion()
+             // to constrain gyro bias and Z-axis accel bias learning. XY accel biases
+             // remain unobservable until the vehicle accelerates and are separately
+             // inhibited by dvelBiasAxisInhibit in CovariancePrediction.
+-            // Use onGroundNotMoving to avoid fusing zero velocity when the vehicle
+-            // is being moved (e.g. on a boat or carried by hand).
+-            // takeoff_expected covers the armed-on-ground case before liftoff.
+-            const bool onGroundNotFlying = onGroundNotMoving || dal.get_takeoff_expected();
+-            if (onGroundNotFlying && tiltAlignComplete) {
++            if (onGroundNotFlying() && tiltAlignComplete) {
+                 fuseVelData = true;
+                 fusingStationaryZeroVel = true;
+                 velPosObs[0] = 0.0f;
+@@ -725,13 +733,9 @@ void NavEKF3_core::SelectVelPosFusion()
+     // PV_AidingMode is AID_RELATIVE but no velocity data is available when stationary
+     // have no velocity observations at all, causing unchecked bias drift. The timeout
+     // check on each velocity source ensures we only inject zero velocity when no real
+-    // sensor data is being fused. Use onGroundNotMoving to avoid injecting zero velocity
+-    // when the vehicle is being moved, and takeoff_expected for armed-on-ground.
+-    // Gate behind fuseHgtData to limit fusion rate to baro rate (~10Hz) and avoid
+-    // overconstraining the filter by fusing at IMU rate.
+-    const bool onGroundNotFlying = onGroundNotMoving || dal.get_takeoff_expected();
+-
+-    if (fuseHgtData && PV_AidingMode != AID_NONE && onGroundNotFlying) {
++    // sensor data is being fused. Gate behind fuseHgtData to limit fusion rate to baro
++    // rate (~10Hz) and avoid overconstraining the filter by fusing at IMU rate.
++    if (fuseHgtData && PV_AidingMode != AID_NONE && onGroundNotFlying()) {
+         // Check if we have recent velocity aiding from any source
+         const uint32_t velAidTimeout_ms = 1000;
+         const bool haveRecentGpsVel = (imuSampleTime_ms - lastVelPassTime_ms < velAidTimeout_ms);
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_core.h b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+index 063d68523a1ce..1b9c94d461180 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_core.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+@@ -832,6 +832,9 @@ class NavEKF3_core : public NavEKF_core_common
+     // determine when to perform fusion of GPS position and  velocity measurements
+     void SelectVelPosFusion();
+ 
++    // true when stationary on the ground and synthetic zero velocity should be fused
++    bool onGroundNotFlying() const;
++
+ #if EK3_FEATURE_BEACON_FUSION
+     // determine when to perform fusion of range measurements take relative to a beacon at a known NED position
+     void SelectRngBcnFusion();

@@ -1,0 +1,26 @@
+From f39649fab40571c21ff804f98669218d1bfc84f7 Mon Sep 17 00:00:00 2001
+From: Andy Piper <github@andypiper.com>
+Date: Wed, 1 Apr 2026 16:03:08 +0100
+Subject: [PATCH] AP_NavEKF3: constrain fusingStationaryZeroVel to not more
+ than NOAID_M_NSE
+
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index 89f793a4ca..93a2d8af0e 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -771,7 +771,7 @@ void NavEKF3_core::FuseVelPosNED()
+                 // giving stronger velocity/bias convergence while we have high confidence
+                 // the vehicle is stationary. Not as tight as a real sensor since
+                 // the measurement is an assumption, not a physical observation.
+-                R_OBS[0] = sq(1.0f);
++                R_OBS[0] = sq(MIN(frontend->_noaidHorizNoise, 1.0f));
+             } else if (tiltAlignComplete && motorsArmed) {
+                 // This is a compromise between corrections for gyro errors and reducing effect of manoeuvre accelerations on tilt estimate
+                 R_OBS[0] = sq(constrain_ftype(frontend->_noaidHorizNoise, 0.5f, 50.0f));
+-- 
+2.39.2 (Apple Git-143)
+
