@@ -37,9 +37,16 @@ for p in "$PATCH_ROOT/patches/02-cyclops-bootstrap/"*.patch; do
     git am --3way "$p"
 done
 
+echo ">> Applying SITL no-GPS fix patches"
+for p in "$PATCH_ROOT/patches/03-sitl-nogps-fixes/"*.patch; do
+    echo "   - $(basename "$p")"
+    git am --3way "$p"
+done
+
+total_patches=$(find "$PATCH_ROOT/patches" -name '*.patch' | wc -l | tr -d ' ')
 echo ""
-echo "Done. Commits added on top of $(git rev-parse --short HEAD~$(ls "$PATCH_ROOT"/patches/*/ | wc -l | tr -d ' '))..HEAD:"
-git log --oneline HEAD~8..HEAD
+echo "Done. Commits added on top of $(git rev-parse --short HEAD~${total_patches})..HEAD:"
+git log --oneline "HEAD~${total_patches}..HEAD"
 echo ""
 echo "Next steps:"
 echo "  cd $AP_DIR"

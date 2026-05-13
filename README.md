@@ -50,7 +50,42 @@ patches/
   02-cyclops-bootstrap/        # New code for external-position bootstrap
     0001-AP_NavEKF3-external-position-bootstrap-for-AID_NONE-.patch
     0002-AP_NavEKF3-gate-TAS-and-sideslip-fusion-through-when.patch
+  03-sitl-nogps-fixes/         # Close four chicken-and-egg gaps that
+                               # prevented the 02 series from firing on a
+                               # plane with no GPS from boot (see below
+                               # and RESULTS-sitl-nogps.md)
+    0001-AP_NavEKF3-allow-init-without-GPS-lock-when-ExtPosCa.patch
+    0002-AP_NavEKF3-report-relative-aiding-flags-during-exter.patch
+    0003-AP_NavEKF3-detect-inFlight-from-airspeed-and-baro-wh.patch
+    0004-AP_NavEKF3-bypass-setLatLng-dead-reckon-gate-after-e.patch
 ```
+
+### What the 03 series fixes
+
+Each fix is gated on `EK3_OPTIONS` bit 3 (`ExtPosCanBootstrap`); default
+behaviour is unchanged for users without it.
+
+1. **0001 (`AP_NavEKF3_core.cpp`)** — `InitialiseFilterBootstrap` refused
+   to start the EKF on a plane without a 3D GPS fix, so `statesInitialised`
+   stayed false forever. Allow init from IMU + compass alone when
+   bootstrap is enabled.
+2. **0002 (`AP_NavEKF3_Control.cpp`)** — `AP_AHRS::_active_EKF_type`
+   (fixed-wing branch) selects DCM when EKF3 reports neither
+   `horiz_pos_rel` nor `horiz_pos_abs` and `const_pos_mode` is set, which
+   is exactly the EKF3 state while waiting for the in-air bootstrap. Force
+   `horiz_vel`, `horiz_pos_rel`, `pred_horiz_pos_rel = true` and
+   `const_pos_mode = false` while in bootstrap mode so AHRS keeps using
+   EKF3 and `LOCAL_POSITION_NED` publishes from boot.
+3. **0003 (`AP_NavEKF3_VehicleStatus.cpp`)** — `detectFlight` (plane
+   branch) gates `inFlight` on GPS-derived `highGndSpd`, which is
+   permanently false without GPS. Allow `inFlight` to latch on
+   `highAirSpd && largeHgtChange` (airspeed > 10 m/s AND |baro hgt
+   change| > 10 m) — two independent sensors, joint confirmation.
+4. **0004 (`AP_NavEKF3_PosVelFusion.cpp`)** — `setLatLng`'s dead-reckon
+   freshness gate is permanently closed by the AID_ABSOLUTE keepalive
+   added in the 02 series, so only the first companion fix is accepted.
+   Bypass the gate when `_has_forced_position` is set so subsequent
+   fixes update position as the README intended.
 
 ## How to apply
 
@@ -65,6 +100,9 @@ for p in /path/to/theseus-ekf-patches/patches/01-upstream-backport/*.patch; do
     git am --3way "$p"
 done
 for p in /path/to/theseus-ekf-patches/patches/02-cyclops-bootstrap/*.patch; do
+    git am --3way "$p"
+done
+for p in /path/to/theseus-ekf-patches/patches/03-sitl-nogps-fixes/*.patch; do
     git am --3way "$p"
 done
 
@@ -95,7 +133,7 @@ EK3_OPTIONS = 8     # bit 3 = ExtPosCanBootstrap
 
 | Branch | Status |
 |---|---|
-| Plane-4.6.3 | Verified — patches apply with one resolved conflict in 0001 (committed into the patch file), SITL Plane builds clean |
+| Plane-4.6.3 | Verified — full series (01 + 02 + 03) applies clean, SITL Plane builds and the no-GPS-from-boot bootstrap flow passes end-to-end (see `RESULTS-sitl-nogps.md`) |
 | Plane-4.5.x | Not yet tested |
 | master | Not yet tested |
 

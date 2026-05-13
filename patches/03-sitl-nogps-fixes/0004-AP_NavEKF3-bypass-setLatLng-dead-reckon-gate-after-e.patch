@@ -1,0 +1,49 @@
+From fdf404c39708d97c310a4670f586d37a6c211235 Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Wed, 13 May 2026 22:09:55 +0300
+Subject: [PATCH 4/4] AP_NavEKF3: bypass setLatLng dead-reckon gate after
+ external-pos bootstrap
+
+setLatLng rejects calls when (now - lastGpsPosPassTime_ms) <
+deadReckonDeclare_ms. After the external-position bootstrap, the
+AID_ABSOLUTE keepalive in setAidingMode() refreshes
+lastGpsPosPassTime_ms every cycle while _has_forced_position is set, so
+this freshness gate is permanently closed. Result: only the first
+companion fix is accepted; every subsequent fix returns
+MAV_RESULT_FAILED, contradicting the README's documented cruise
+behaviour ("MAV_CMD_EXTERNAL_POSITION_ESTIMATE at companion cadence /
+standard position resets").
+
+The gate's intent is "don't override when fresh GPS is actively
+passing." In bootstrap mode there is no real GPS; the keepalive is
+simulating freshness only to keep AID_ABSOLUTE alive. Skip the gate
+when _has_forced_position is set so subsequent companion fixes update
+position.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index 1c5ae2c651..5e2cb6bcb0 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -199,7 +199,15 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
+         (frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) &&
+         validOrigin && PV_AidingMode == AID_NONE && inFlight;
+ 
+-    if ((imuSampleTime_ms - lastGpsPosPassTime_ms) < frontend->deadReckonDeclare_ms ||
++    // Once we have been bootstrapped from an external position estimate, allow
++    // subsequent setLatLng calls to update position regardless of the dead-reckon
++    // freshness check. The AID_ABSOLUTE keepalive in setAidingMode() refreshes
++    // lastGpsPosPassTime_ms every cycle, so without this override the dead-reckon
++    // gate would reject every companion fix after the first bootstrap.
++    const bool deadReckonGate =
++        !_has_forced_position &&
++        (imuSampleTime_ms - lastGpsPosPassTime_ms) < frontend->deadReckonDeclare_ms;
++    if (deadReckonGate ||
+         (PV_AidingMode == AID_NONE && !bootstrap_allowed) ||
+         !validOrigin) {
+         return false;
+-- 
+2.39.2 (Apple Git-143)
+

@@ -1,0 +1,42 @@
+From d01ac0bfc2d95c887246adf04a69fd0abdbef479 Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Wed, 13 May 2026 22:09:40 +0300
+Subject: [PATCH 3/4] AP_NavEKF3: detect inFlight from airspeed and baro when
+ GPS is unavailable
+
+NavEKF3_core::detectFlight (plane branch) gates inFlight=true on
+highGndSpd (GPS-derived ground speed > 5 m/s). Without GPS, gpsDataNew.vel
+is always zero, so inFlight is permanently false and the
+external-position bootstrap gate inside setLatLng (which requires
+inFlight) never opens, even at 30 m/s airspeed and several thousand
+metres of altitude gain.
+
+When ExtPosCanBootstrap is set, allow inFlight to latch true on the
+conjunction (highAirSpd && largeHgtChange): airspeed > 10 m/s AND
+|baro hgt change| > 10 m from initial. The two signals come from
+independent sensors (pitot vs. baro) so it takes a genuine failure of
+both to mis-declare flight.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_VehicleStatus.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_VehicleStatus.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_VehicleStatus.cpp
+index 3fd1c80e2b..695facbc3b 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_VehicleStatus.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_VehicleStatus.cpp
+@@ -365,6 +365,12 @@ void NavEKF3_core::detectFlight()
+             if (highGndSpd && (dal.get_takeoff_expected() || highAirSpd || largeHgtChange)) {
+                 // to a high certainty we are flying
+                 inFlight = true;
++            } else if ((frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) &&
++                       highAirSpd && largeHgtChange) {
++                // External-position-bootstrap path: GPS-derived gnd speed is
++                // unavailable, so require both airspeed > 10 m/s and >10 m of
++                // baro height change as joint confirmation we are in the air.
++                inFlight = true;
+             }
+         } else {
+             // to a high certainty we are not flying
+-- 
+2.39.2 (Apple Git-143)
+

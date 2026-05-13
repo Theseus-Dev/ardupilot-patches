@@ -1,0 +1,52 @@
+From 835c5d587d54dbceeb3922bec8dff31cbaf923f2 Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Wed, 13 May 2026 22:09:29 +0300
+Subject: [PATCH 2/4] AP_NavEKF3: report relative aiding flags during
+ external-pos bootstrap
+
+AP_AHRS::_active_EKF_type (fixed-wing branch) selects DCM whenever the
+EKF reports neither horiz_pos_rel nor horiz_pos_abs and const_pos_mode is
+set, which is exactly the EKF3 state while waiting for the in-air
+bootstrap. As a result LOCAL_POSITION_NED was never published on the
+ground even after SET_GPS_GLOBAL_ORIGIN, because AHRS had already fallen
+back to DCM (which has no position without GPS).
+
+When ExtPosCanBootstrap is set, validOrigin is true, and the filter is
+healthy, force horiz_vel, horiz_pos_rel, pred_horiz_pos_rel = true and
+const_pos_mode = false. Position reported in this window is the EKF
+origin (held at 0,0 by AID_NONE constant-position fusion), which matches
+the value the bootstrap-patched getPosNE() was already prepared to
+return.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+index 99cca31ffe..185cb04cda 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+@@ -808,6 +808,21 @@ void  NavEKF3_core::updateFilterStatus(void)
+     status.flags.initalized = status.flags.initalized || healthy();
+     status.flags.dead_reckoning = (PV_AidingMode != AID_NONE) && doingWindRelNav && !((doingFlowNav && gndOffsetValid) || doingNormalGpsNav || doingBodyVelNav);
+ 
++    // External-position-bootstrap path: when ExtPosCanBootstrap is set and an
++    // origin has been provided, report relative-position aiding so AHRS keeps
++    // using EKF3 instead of falling back to DCM. Without this, plane's AHRS
++    // selects DCM when armed in AID_NONE (const_pos_mode), which suppresses
++    // LOCAL_POSITION_NED and prevents the companion from coming up before the
++    // in-air bootstrap. Position values published in this state are the EKF
++    // origin (held at 0,0 by AID_NONE constant-position fusion).
++    if ((frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) &&
++        validOrigin && filterHealthy) {
++        status.flags.horiz_vel = true;
++        status.flags.horiz_pos_rel = true;
++        status.flags.pred_horiz_pos_rel = true;
++        status.flags.const_pos_mode = false;
++    }
++
+     filterStatus.value = status.value;
+ }
+ 
+-- 
+2.39.2 (Apple Git-143)
+
