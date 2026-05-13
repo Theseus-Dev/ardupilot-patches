@@ -1,46 +1,48 @@
-From 4bdc307d6de288600b20421055722da26ac79310 Mon Sep 17 00:00:00 2001
+From 8ea4f482b29a91fb449089245b69ecb6be81a6d5 Mon Sep 17 00:00:00 2001
 From: ian <ian.laffey@mail.mcgill.ca>
-Date: Thu, 14 May 2026 01:42:14 +0300
-Subject: [PATCH 6/6] AP_NavEKF3: companion-supplied wind + ground bootstrap
- fixes
+Date: Thu, 14 May 2026 02:01:07 +0300
+Subject: [PATCH 4/4] AP_NavEKF3: companion-driven position + wind + ground
+ bootstrap
 
-Three related changes bundled here because they all touch
-NavEKF3_core::setLatLng and the new NavEKF3_core::setExternalWind:
+All the setLatLng / setExternalWind plumbing for companion-driven no-GPS
+flight, bundled into one logical patch:
 
-  1. Add setExternalWind() so the companion can directly inject the
-     EKF's wind state. Wires AP_AHRS::set_external_wind_estimate to
-     call EKF3 as well as DCM, so the existing MAVLink command
-     MAV_CMD_EXTERNAL_WIND_ESTIMATE (43004) reaches the EKF. Reject
-     the call when onGround (stationary zero-vel fusion runs there
-     and wind state has no role until takeoff).
+  setLatLng (PosVelFusion.cpp):
+    * Bootstrap path: drop the inFlight gate from bootstrap_allowed so
+      the EKF can transition AID_NONE -> AID_ABSOLUTE on the ground.
+      Required for AUTO mode entry: without a valid current_loc,
+      Plane::navigate() short-circuits and L1.update_waypoint never
+      runs. Stationary zero-velocity fusion (already gated on !inFlight
+      by patch 01/0006) keeps velocity pinned to 0 on the ground.
+    * Velocity seed: on the first bootstrap, seed velocity state to
+      airspeed*(cos yaw, sin yaw) so airspeed/sideslip fusion converges
+      to the forward solution rather than the backward branch of
+      TAS = |vel - wind|. Gated on airspeed > 5 m/s so a covered pitot
+      on the ground doesn't bake a bogus velocity into the state.
+    * Dead-reckon gate bypass: skip the freshness check when either
+      bootstrap_allowed is true (EKF init pins lastGpsPosPassTime_ms
+      so the gate would falsely reject the first call) or
+      _has_forced_position is true (AID_ABSOLUTE keepalive refreshes
+      the timestamp every cycle so the gate would reject every
+      companion fix after the bootstrap).
 
-  2. Remove the inFlight gate from bootstrap_allowed in setLatLng so
-     the companion can bootstrap the EKF on the ground. Without this
-     the EKF stays in AID_NONE until takeoff, AHRS.get_location
-     returns false, and Plane::navigate() short-circuits before ever
-     calling L1.update_waypoint (so AUTO mission never runs).
+  setExternalWind (new, PosVelFusion.cpp + NavEKF3.h/.cpp + core.h):
+    Write the NED wind vector directly into stateStruct.wind_vel and
+    set wind covariance to the supplied accuracy. Reject when onGround.
+    Paired with the wind-learning gate in Control.cpp the companion-
+    supplied wind stays frozen for the duration of bootstrap flight.
 
-  3. Seed the velocity state to airspeed*(cos yaw, sin yaw) on the
-     first bootstrap, gated on airspeed > 5 m/s. Without seeding the
-     EKF can converge to the backward-velocity branch of the
-     airspeed/sideslip fusion solution set (|v - wind| = TAS has two
-     roots) and report ground velocity 180 deg from truth. Gating on
-     airspeed > 5 m/s means a covered pitot on the ground doesn't
-     bake a bogus velocity into the state; stationary zero-vel fusion
-     pins it to 0 until takeoff.
-
-  4. Also bypass the dead-reckon freshness gate when bootstrap_allowed
-     is true. EKF init pins lastGpsPosPassTime_ms to imuSampleTime_ms,
-     so without this the first ground bootstrap call would be rejected
-     for the first ~deadReckonDeclare_ms (~4s) even though no GPS data
-     is actually flowing.
+  AHRS.h hook: route AP_AHRS::set_external_wind_estimate to EKF3 as
+    well as DCM, so the existing MAVLink command
+    MAV_CMD_EXTERNAL_WIND_ESTIMATE (43004) actually reaches the EKF.
+    No new MAVLink command needed.
 ---
  libraries/AP_AHRS/AP_AHRS.h                   |  14 +++
  libraries/AP_NavEKF3/AP_NavEKF3.cpp           |  12 ++
  libraries/AP_NavEKF3/AP_NavEKF3.h             |   8 ++
- .../AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp    | 109 ++++++++++++++++--
+ .../AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp    | 107 ++++++++++++++++--
  libraries/AP_NavEKF3/AP_NavEKF3_core.h        |   3 +
- 5 files changed, 134 insertions(+), 12 deletions(-)
+ 5 files changed, 137 insertions(+), 7 deletions(-)
 
 diff --git a/libraries/AP_AHRS/AP_AHRS.h b/libraries/AP_AHRS/AP_AHRS.h
 index 00988f1a0a..1aa381f5ea 100644
@@ -112,10 +114,10 @@ index d46d91eada..a7f8bd8137 100644
      // return false if ground height is not being estimated.
      bool getHAGL(float &HAGL) const;
 diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
-index 5e2cb6bcb0..449d9db735 100644
+index 1c5ae2c651..449d9db735 100644
 --- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
 +++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
-@@ -191,21 +191,34 @@ void NavEKF3_core::ResetPosition(resetDataSource posResetSource)
+@@ -191,15 +191,36 @@ void NavEKF3_core::ResetPosition(resetDataSource posResetSource)
  bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms)
  {
      // External-position-bootstrap path: when EK3_OPTIONS bit ExtPosCanBootstrap is set,
@@ -140,11 +142,7 @@ index 5e2cb6bcb0..449d9db735 100644
          (frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) &&
 -        validOrigin && PV_AidingMode == AID_NONE && inFlight;
 -
--    // Once we have been bootstrapped from an external position estimate, allow
--    // subsequent setLatLng calls to update position regardless of the dead-reckon
--    // freshness check. The AID_ABSOLUTE keepalive in setAidingMode() refreshes
--    // lastGpsPosPassTime_ms every cycle, so without this override the dead-reckon
--    // gate would reject every companion fix after the first bootstrap.
+-    if ((imuSampleTime_ms - lastGpsPosPassTime_ms) < frontend->deadReckonDeclare_ms ||
 +        validOrigin && PV_AidingMode == AID_NONE;
 +
 +    // Bypass the dead-reckon freshness gate in two cases:
@@ -156,13 +154,14 @@ index 5e2cb6bcb0..449d9db735 100644
 +    //     AID_ABSOLUTE keepalive in setAidingMode refreshes
 +    //     lastGpsPosPassTime_ms every cycle, so without this override the
 +    //     freshness gate would reject every companion fix after the first.
-     const bool deadReckonGate =
--        !_has_forced_position &&
++    const bool deadReckonGate =
 +        !_has_forced_position && !bootstrap_allowed &&
-         (imuSampleTime_ms - lastGpsPosPassTime_ms) < frontend->deadReckonDeclare_ms;
-     if (deadReckonGate ||
++        (imuSampleTime_ms - lastGpsPosPassTime_ms) < frontend->deadReckonDeclare_ms;
++    if (deadReckonGate ||
          (PV_AidingMode == AID_NONE && !bootstrap_allowed) ||
-@@ -252,6 +265,39 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
+         !validOrigin) {
+         return false;
+@@ -244,6 +265,39 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
          P[4][4] = sq(25.0f);
          P[5][5] = sq(25.0f);
  
@@ -202,7 +201,7 @@ index 5e2cb6bcb0..449d9db735 100644
          // Transition to AID_ABSOLUTE and refresh timeouts so the health checks in
          // setAidingMode() don't immediately push us back to AID_NONE.
          PV_AidingMode = AID_ABSOLUTE;
-@@ -267,6 +313,45 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
+@@ -259,6 +313,45 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
  
      return true;
  }

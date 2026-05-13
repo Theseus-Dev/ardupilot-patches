@@ -57,11 +57,9 @@ patches/
                                # let AUTO mission actually navigate.
                                # See RUNBOOK.md for the init procedure.
     0001-AP_NavEKF3-allow-init-without-GPS-lock-when-ExtPosCa.patch
-    0002-AP_NavEKF3-report-relative-aiding-flags-during-exter.patch
+    0002-AP_NavEKF3-keep-filter-healthy-and-wind-frozen-durin.patch
     0003-AP_NavEKF3-detect-inFlight-from-airspeed-and-baro-wh.patch
-    0004-AP_NavEKF3-bypass-setLatLng-dead-reckon-gate-after-e.patch
-    0005-AP_NavEKF3-disable-wind-learning-while-_has_forced_p.patch
-    0006-AP_NavEKF3-companion-supplied-wind-ground-bootstrap-.patch
+    0004-AP_NavEKF3-companion-driven-position-wind-ground-boo.patch
 ```
 
 ### What the 03 series fixes

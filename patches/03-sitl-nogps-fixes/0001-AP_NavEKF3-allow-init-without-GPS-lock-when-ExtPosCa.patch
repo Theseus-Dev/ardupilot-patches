@@ -1,15 +1,15 @@
-From dcac199af16c23b2391d614eab210233428faf15 Mon Sep 17 00:00:00 2001
+From 8eefc1f22a2f45338d7df955895827e3f54967ca Mon Sep 17 00:00:00 2001
 From: ian <ian.laffey@mail.mcgill.ca>
-Date: Wed, 13 May 2026 22:09:17 +0300
+Date: Thu, 14 May 2026 02:00:16 +0300
 Subject: [PATCH 1/4] AP_NavEKF3: allow init without GPS lock when
  ExtPosCanBootstrap is set
 
 Plane EKF3's InitialiseFilterBootstrap unconditionally refused to start
-without a 3D GPS fix, leaving statesInitialised=false and every downstream
-flag cleared. With EK3_OPTIONS bit ExtPosCanBootstrap set, allow the
-filter to initialise from IMU (tilt) and compass (yaw) alone so attitude
-and LOCAL_POSITION_NED at origin are available before the in-air
-external-position bootstrap.
+without a 3D GPS fix, leaving statesInitialised=false and every
+downstream flag cleared. With EK3_OPTIONS bit ExtPosCanBootstrap set,
+allow the filter to initialise from IMU (tilt) and compass (yaw) alone
+so attitude and LOCAL_POSITION_NED at origin are available before the
+in-air external-position bootstrap.
 ---
  libraries/AP_NavEKF3/AP_NavEKF3_core.cpp | 8 ++++++--
  1 file changed, 6 insertions(+), 2 deletions(-)

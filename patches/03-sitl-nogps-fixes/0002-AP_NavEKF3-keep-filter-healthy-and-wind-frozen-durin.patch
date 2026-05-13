@@ -1,0 +1,98 @@
+From 95eb5aa4bd04ad8c3142142346d930e5b29f402b Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Thu, 14 May 2026 02:00:31 +0300
+Subject: [PATCH 2/4] AP_NavEKF3: keep filter healthy and wind frozen during
+ forced-position mode
+
+Three Control.cpp changes that together make AHRS use EKF3 (not DCM)
+and keep wind state stable while operating from companion-supplied
+position/wind:
+
+  1. updateFilterStatus: when ExtPosCanBootstrap is set, validOrigin
+     is true, and the filter is healthy, force horiz_vel,
+     horiz_pos_rel, pred_horiz_pos_rel = true and const_pos_mode =
+     false. Without this, AP_AHRS::_active_EKF_type (fixed-wing
+     branch) falls back to DCM, AHRS.get_location returns false,
+     and Plane::navigate() short-circuits before L1 runs.
+
+  2. setWindMagStateLearningMode: gate canEstimateWind on
+     !_has_forced_position. Without absolute velocity aiding the EKF
+     cannot separate velocity from wind (TAS = |vel - wind| is
+     underdetermined); pinning wind to the companion-supplied value
+     breaks the ambiguity and lets airspeed/sideslip fusion solve
+     for velocity uniquely.
+
+  3. setOrigin: emit "EKF3 IMUx ExtPosCanBootstrap active" STATUSTEXT
+     when origin is set with the option bit on, so operators and log
+     readers can see at a glance that the lane is running in this
+     special mode.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp | 36 ++++++++++++++++++++-
+ 1 file changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+index 99cca31ffe..706520a1f0 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+@@ -59,9 +59,17 @@ NavEKF3_core::MagCal NavEKF3_core::effective_magCal(void) const
+ // avoid unnecessary operations
+ void NavEKF3_core::setWindMagStateLearningMode()
+ {
++    // External-position-bootstrap path: when _has_forced_position is set, the EKF
++    // is operating without absolute velocity aiding (no GPS). In that regime
++    // velocity and wind are jointly unobservable from TAS+sideslip alone -- both
++    // can drift together while preserving |vel - wind| = airspeed, producing
++    // runaway ground speed. Keep wind frozen at whatever value the companion
++    // supplied (see NavEKF3_core::setExternalWind) and never let the filter
++    // try to learn wind in this regime.
+     const bool canEstimateWind = ((finalInflightYawInit && dragFusionEnabled) || assume_zero_sideslip()) &&
+                                  !onGround &&
+-                                 PV_AidingMode != AID_NONE;
++                                 PV_AidingMode != AID_NONE &&
++                                 !_has_forced_position;
+     if (!inhibitWindStates && !canEstimateWind) {
+         inhibitWindStates = true;
+         lastAspdEstIsValid = false;
+@@ -726,6 +734,17 @@ bool NavEKF3_core::setOrigin(const Location &loc)
+ 
+     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "EKF3 IMU%u origin set",(unsigned)imu_index);
+ 
++    // Announce ExtPosCanBootstrap mode at origin-set time so the GCS / dataflash
++    // log has a single, easy-to-grep marker that this lane is configured for
++    // companion-driven no-GPS bootstrap. This lands alongside the other
++    // EKF/AHRS startup STATUSTEXTs so an operator (or a tlog reader) can see
++    // at-a-glance that the lane is running with the option active.
++    if (frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) {
++        GCS_SEND_TEXT(MAV_SEVERITY_INFO,
++                      "EKF3 IMU%u ExtPosCanBootstrap active",
++                      (unsigned)imu_index);
++    }
++
+     if (!frontend->common_origin_valid) {
+         frontend->common_origin_valid = true;
+         // put origin in frontend as well to ensure it stays in sync between lanes
+@@ -808,6 +827,21 @@ void  NavEKF3_core::updateFilterStatus(void)
+     status.flags.initalized = status.flags.initalized || healthy();
+     status.flags.dead_reckoning = (PV_AidingMode != AID_NONE) && doingWindRelNav && !((doingFlowNav && gndOffsetValid) || doingNormalGpsNav || doingBodyVelNav);
+ 
++    // External-position-bootstrap path: when ExtPosCanBootstrap is set and an
++    // origin has been provided, report relative-position aiding so AHRS keeps
++    // using EKF3 instead of falling back to DCM. Without this, plane's AHRS
++    // selects DCM when armed in AID_NONE (const_pos_mode), which suppresses
++    // LOCAL_POSITION_NED and prevents the companion from coming up before the
++    // in-air bootstrap. Position values published in this state are the EKF
++    // origin (held at 0,0 by AID_NONE constant-position fusion).
++    if ((frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) &&
++        validOrigin && filterHealthy) {
++        status.flags.horiz_vel = true;
++        status.flags.horiz_pos_rel = true;
++        status.flags.pred_horiz_pos_rel = true;
++        status.flags.const_pos_mode = false;
++    }
++
+     filterStatus.value = status.value;
+ }
+ 
+-- 
+2.39.2 (Apple Git-143)
+
