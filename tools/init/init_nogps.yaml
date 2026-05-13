@@ -1,7 +1,7 @@
 # Sample initialization config for theseus-ekf-patches no-GPS bootstrap.
 #
-# All values come from the companion's first valid pose fix at startup.
-# Edit before each flight (or generate from your nav pipeline).
+# Edit the position/wind values before each flight (or generate from your
+# companion's nav pipeline) and run init_nogps.py.
 
 mavlink:
   # MAVLink endpoint to the autopilot.
@@ -11,39 +11,33 @@ mavlink:
   connection: tcp:127.0.0.1:5760
   baud: 57600                   # ignored for tcp/udp
   source_system: 254            # GCS-side sysid
-  target_system: 1              # autopilot sysid (1 is the default)
+  target_system: 1              # autopilot sysid (1 is default)
 
-# Reference frame the EKF uses for its local NE math.
-# Doesn't have to be exact — a few km off is fine; baro is the height ref.
-# Use somewhere near where you actually are.
-origin:
+# Plane's location on the ground at startup.
+# This single point is used for: EKF origin, AHRS home, and the EKF's
+# initial position state. If you want a fixed reference frame separate
+# from the actual takeoff point, edit the script — but for a plane on a
+# runway this is the right knob.
+position:
   lat:  -35.363261              # degrees
   lon:  149.165230
   alt:  584.0                   # metres MSL
+  accuracy_m: 5.0               # horizontal accuracy of this estimate
 
-# Plane's actual position on the ground at startup (from your companion).
-# This is what the EKF state gets reset to. Pick from your nav pipeline's
-# best initial estimate. Accuracy ~5 m is fine for ground init.
-ground_position:
-  lat:  -35.363261
-  lon:  149.165230
-  accuracy_m: 5.0
-
-# Current wind. If you don't know, send (0, 0) — EKF will live with that
-# but velocity tracking will degrade in flight.
+# Current wind. (0, 0) is acceptable when unknown but velocity tracking
+# will degrade in flight.
 wind:
   speed_ms:  0.0                # m/s
-  direction_deg: 0.0            # 0=from N, clockwise (standard met)
+  direction_deg: 0.0            # 0 = from N, clockwise (standard met)
 
-# Timing between commands. Defaults are conservative for slow links.
+# Timing between commands. Conservative defaults for slow links.
 delays_s:
   after_origin: 1.0
   after_home: 1.0
-  after_position: 2.0           # gives EKF time to emit "aiding from external pos"
+  after_position: 2.0           # gives EKF time to emit STATUSTEXT
   after_wind: 1.0
 
-# Optional: verify each step by waiting for the corresponding STATUSTEXT.
-# Set false if your link drops STATUSTEXT messages.
+# Wait for each STATUSTEXT confirmation. Disable if your link drops them.
 verify:
   bootstrap_statustext: true
   wind_statustext: true

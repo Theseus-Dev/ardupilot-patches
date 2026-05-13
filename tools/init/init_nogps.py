@@ -57,7 +57,7 @@ def wait_for_statustext(mav, needle: str, timeout: float) -> bool:
 
 
 def step_origin(mav, cfg) -> None:
-    o = cfg["origin"]
+    o = cfg["position"]
     log(f"1/4 SET_GPS_GLOBAL_ORIGIN  lat={o['lat']}  lon={o['lon']}  alt={o['alt']}")
     mav.mav.set_gps_global_origin_send(
         mav.target_system,
@@ -69,7 +69,7 @@ def step_origin(mav, cfg) -> None:
 
 
 def step_home(mav, cfg) -> None:
-    o = cfg["origin"]
+    o = cfg["position"]
     log(f"2/4 MAV_CMD_DO_SET_HOME    lat={o['lat']}  lon={o['lon']}  alt={o['alt']}")
     mav.mav.command_int_send(
         mav.target_system, mav.target_component,
@@ -89,7 +89,7 @@ def step_home(mav, cfg) -> None:
 
 
 def step_position(mav, cfg) -> bool:
-    p = cfg["ground_position"]
+    p = cfg["position"]
     log(f"3/4 EXTERNAL_POSITION_ESTIMATE  lat={p['lat']}  lon={p['lon']}  acc={p['accuracy_m']}m")
     mav.mav.command_int_send(
         mav.target_system, mav.target_component,
