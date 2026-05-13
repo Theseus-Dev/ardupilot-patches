@@ -50,14 +50,18 @@ patches/
   02-cyclops-bootstrap/        # New code for external-position bootstrap
     0001-AP_NavEKF3-external-position-bootstrap-for-AID_NONE-.patch
     0002-AP_NavEKF3-gate-TAS-and-sideslip-fusion-through-when.patch
-  03-sitl-nogps-fixes/         # Close four chicken-and-egg gaps that
+  03-sitl-nogps-fixes/         # Close the chicken-and-egg gaps that
                                # prevented the 02 series from firing on a
-                               # plane with no GPS from boot (see below
-                               # and RESULTS-sitl-nogps.md)
+                               # plane with no GPS from boot, plus the
+                               # wind-anchor + ground-bootstrap fixes that
+                               # let AUTO mission actually navigate.
+                               # See RUNBOOK.md for the init procedure.
     0001-AP_NavEKF3-allow-init-without-GPS-lock-when-ExtPosCa.patch
     0002-AP_NavEKF3-report-relative-aiding-flags-during-exter.patch
     0003-AP_NavEKF3-detect-inFlight-from-airspeed-and-baro-wh.patch
     0004-AP_NavEKF3-bypass-setLatLng-dead-reckon-gate-after-e.patch
+    0005-AP_NavEKF3-disable-wind-learning-while-_has_forced_p.patch
+    0006-AP_NavEKF3-companion-supplied-wind-ground-bootstrap-.patch
 ```
 
 ### What the 03 series fixes

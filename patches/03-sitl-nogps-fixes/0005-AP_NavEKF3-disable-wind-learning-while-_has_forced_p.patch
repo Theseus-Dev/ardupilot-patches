@@ -1,0 +1,66 @@
+From 52b7eaccefc8bb3e7a61defeb654f2f28062c4d7 Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Thu, 14 May 2026 01:42:00 +0300
+Subject: [PATCH 5/6] AP_NavEKF3: disable wind learning while
+ _has_forced_position is set
+
+Without absolute velocity aiding from GPS the EKF cannot separate
+velocity from wind: TAS = |vel - wind| has infinitely many solutions
+along the (vel, wind) co-drift line, so the airspeed/sideslip fusion
+will let velocity and wind co-drift while keeping TAS constant ->
+runaway ground speed even though attitude tracks truth.
+
+When the operator has bootstrapped the filter from an external position
+estimate (_has_forced_position set), gate canEstimateWind on
+!_has_forced_position so the wind state stays frozen at whatever the
+companion supplied via MAV_CMD_EXTERNAL_WIND_ESTIMATE / setExternalWind.
+With wind anchored, TAS + sideslip + yaw uniquely determines velocity
+and the filter stays bounded.
+---
+ libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+index 185cb04cda..706520a1f0 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp
+@@ -59,9 +59,17 @@ NavEKF3_core::MagCal NavEKF3_core::effective_magCal(void) const
+ // avoid unnecessary operations
+ void NavEKF3_core::setWindMagStateLearningMode()
+ {
++    // External-position-bootstrap path: when _has_forced_position is set, the EKF
++    // is operating without absolute velocity aiding (no GPS). In that regime
++    // velocity and wind are jointly unobservable from TAS+sideslip alone -- both
++    // can drift together while preserving |vel - wind| = airspeed, producing
++    // runaway ground speed. Keep wind frozen at whatever value the companion
++    // supplied (see NavEKF3_core::setExternalWind) and never let the filter
++    // try to learn wind in this regime.
+     const bool canEstimateWind = ((finalInflightYawInit && dragFusionEnabled) || assume_zero_sideslip()) &&
+                                  !onGround &&
+-                                 PV_AidingMode != AID_NONE;
++                                 PV_AidingMode != AID_NONE &&
++                                 !_has_forced_position;
+     if (!inhibitWindStates && !canEstimateWind) {
+         inhibitWindStates = true;
+         lastAspdEstIsValid = false;
+@@ -726,6 +734,17 @@ bool NavEKF3_core::setOrigin(const Location &loc)
+ 
+     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "EKF3 IMU%u origin set",(unsigned)imu_index);
+ 
++    // Announce ExtPosCanBootstrap mode at origin-set time so the GCS / dataflash
++    // log has a single, easy-to-grep marker that this lane is configured for
++    // companion-driven no-GPS bootstrap. This lands alongside the other
++    // EKF/AHRS startup STATUSTEXTs so an operator (or a tlog reader) can see
++    // at-a-glance that the lane is running with the option active.
++    if (frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) {
++        GCS_SEND_TEXT(MAV_SEVERITY_INFO,
++                      "EKF3 IMU%u ExtPosCanBootstrap active",
++                      (unsigned)imu_index);
++    }
++
+     if (!frontend->common_origin_valid) {
+         frontend->common_origin_valid = true;
+         // put origin in frontend as well to ensure it stays in sync between lanes
+-- 
+2.39.2 (Apple Git-143)
+

@@ -1,0 +1,267 @@
+From 4bdc307d6de288600b20421055722da26ac79310 Mon Sep 17 00:00:00 2001
+From: ian <ian.laffey@mail.mcgill.ca>
+Date: Thu, 14 May 2026 01:42:14 +0300
+Subject: [PATCH 6/6] AP_NavEKF3: companion-supplied wind + ground bootstrap
+ fixes
+
+Three related changes bundled here because they all touch
+NavEKF3_core::setLatLng and the new NavEKF3_core::setExternalWind:
+
+  1. Add setExternalWind() so the companion can directly inject the
+     EKF's wind state. Wires AP_AHRS::set_external_wind_estimate to
+     call EKF3 as well as DCM, so the existing MAVLink command
+     MAV_CMD_EXTERNAL_WIND_ESTIMATE (43004) reaches the EKF. Reject
+     the call when onGround (stationary zero-vel fusion runs there
+     and wind state has no role until takeoff).
+
+  2. Remove the inFlight gate from bootstrap_allowed in setLatLng so
+     the companion can bootstrap the EKF on the ground. Without this
+     the EKF stays in AID_NONE until takeoff, AHRS.get_location
+     returns false, and Plane::navigate() short-circuits before ever
+     calling L1.update_waypoint (so AUTO mission never runs).
+
+  3. Seed the velocity state to airspeed*(cos yaw, sin yaw) on the
+     first bootstrap, gated on airspeed > 5 m/s. Without seeding the
+     EKF can converge to the backward-velocity branch of the
+     airspeed/sideslip fusion solution set (|v - wind| = TAS has two
+     roots) and report ground velocity 180 deg from truth. Gating on
+     airspeed > 5 m/s means a covered pitot on the ground doesn't
+     bake a bogus velocity into the state; stationary zero-vel fusion
+     pins it to 0 until takeoff.
+
+  4. Also bypass the dead-reckon freshness gate when bootstrap_allowed
+     is true. EKF init pins lastGpsPosPassTime_ms to imuSampleTime_ms,
+     so without this the first ground bootstrap call would be rejected
+     for the first ~deadReckonDeclare_ms (~4s) even though no GPS data
+     is actually flowing.
+---
+ libraries/AP_AHRS/AP_AHRS.h                   |  14 +++
+ libraries/AP_NavEKF3/AP_NavEKF3.cpp           |  12 ++
+ libraries/AP_NavEKF3/AP_NavEKF3.h             |   8 ++
+ .../AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp    | 109 ++++++++++++++++--
+ libraries/AP_NavEKF3/AP_NavEKF3_core.h        |   3 +
+ 5 files changed, 134 insertions(+), 12 deletions(-)
+
+diff --git a/libraries/AP_AHRS/AP_AHRS.h b/libraries/AP_AHRS/AP_AHRS.h
+index 00988f1a0a..1aa381f5ea 100644
+--- a/libraries/AP_AHRS/AP_AHRS.h
++++ b/libraries/AP_AHRS/AP_AHRS.h
+@@ -132,8 +132,22 @@ public:
+     }
+ 
+ #if AP_AHRS_EXTERNAL_WIND_ESTIMATE_ENABLED
++    // Hook for MAV_CMD_EXTERNAL_WIND_ESTIMATE. Updates DCM's wind cache
++    // (legacy path) and, when EKF3 is built in, also pushes the value into
++    // EKF3's wind state via setExternalWind. Required for no-GPS bootstrap
++    // operation where the companion supplies wind so the EKF can solve for
++    // velocity from TAS + sideslip + known wind.
+     void set_external_wind_estimate(float speed, float direction) {
+         dcm.set_external_wind_estimate(speed, direction);
++#if HAL_NAVEKF3_AVAILABLE
++        const float windN = -cosf(radians(direction)) * speed;
++        const float windE = -sinf(radians(direction)) * speed;
++        // Default wind state variance: 2 m/s. Tighten if the companion ever
++        // supplies an explicit accuracy (currently the MAVLink command does
++        // not carry one, so 2.0 m/s is a conservative anchor that's small
++        // enough to lock wind useful for fusion).
++        EKF3.setExternalWind(windN, windE, 2.0f);
++#endif
+     }
+ #endif
+ 
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3.cpp b/libraries/AP_NavEKF3/AP_NavEKF3.cpp
+index 264eebf7cb..620b00106c 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3.cpp
+@@ -1439,6 +1439,18 @@ bool NavEKF3::setLatLng(const Location &loc, float posAccuracy, uint32_t timesta
+ #endif // EK3_FEATURE_POSITION_RESET
+ }
+ 
++bool NavEKF3::setExternalWind(float windN, float windE, float windAccuracy)
++{
++    if (!core) {
++        return false;
++    }
++    bool ret = false;
++    for (uint8_t i=0; i<num_cores; i++) {
++        ret |= core[i].setExternalWind(windN, windE, windAccuracy);
++    }
++    return ret;
++}
++
+ 
+ // return estimated height above ground level
+ // return false if ground height is not being estimated.
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3.h b/libraries/AP_NavEKF3/AP_NavEKF3.h
+index d46d91eada..a7f8bd8137 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3.h
+@@ -157,6 +157,14 @@ public:
+     // Returns true if the set was successful
+     bool setLatLng(const Location &loc, float posErr, uint32_t timestamp_ms);
+ 
++    // External-position-bootstrap path: directly set the EKF's wind state.
++    // Needed when operating without GPS aiding: the companion supplies the
++    // wind vector so airspeed+sideslip fusion can solve for velocity (with
++    // wind unknown, the system is underdetermined and velocity/wind co-drift).
++    // windN, windE in m/s NED frame. windAccuracy in m/s sets the wind state
++    // variance. Returns true if any core accepted the value.
++    bool setExternalWind(float windN, float windE, float windAccuracy);
++
+     // return estimated height above ground level
+     // return false if ground height is not being estimated.
+     bool getHAGL(float &HAGL) const;
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index 5e2cb6bcb0..449d9db735 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -191,21 +191,34 @@ void NavEKF3_core::ResetPosition(resetDataSource posResetSource)
+ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms)
+ {
+     // External-position-bootstrap path: when EK3_OPTIONS bit ExtPosCanBootstrap is set,
+-    // allow a setLatLng call to transition the filter from AID_NONE to AID_ABSOLUTE if
+-    // the vehicle is in flight. Gated on inFlight (not just !onGround) so on-ground
+-    // compass/sensor effects can't be baked into the bootstrap state, and so that the
+-    // first accepted fix happens with the IMU in its flight motion regime.
++    // allow a setLatLng call to transition the filter from AID_NONE to AID_ABSOLUTE
++    // at any time (including on the ground). Ground bootstrap is safe because:
++    //   - Stationary zero-velocity fusion (patch 01/0006) still runs while !inFlight,
++    //     so the velocity state remains pinned to 0 until takeoff.
++    //   - Wind learning is permanently disabled while _has_forced_position is set
++    //     (setWindMagStateLearningMode gate), so the frozen wind value from the
++    //     companion isn't corrupted by airspeed/sideslip fusion on the ground.
++    //   - The velocity seed below is gated on airspeed > 5 m/s, so a covered pitot
++    //     can't bake a bogus velocity into the state.
++    // The original 02-cyclops/0001 gate on inFlight was conservative against compass
++    // interference baked in on the ground; we accept that risk in exchange for a
++    // valid current_loc before AUTO mode entry (otherwise AUTO snapshots an invalid
++    // current_loc into prev_WP_loc and mission/L1 never properly initialises).
+     const bool bootstrap_allowed =
+         (frontend->_options & (int32_t)NavEKF3::Options::ExtPosCanBootstrap) &&
+-        validOrigin && PV_AidingMode == AID_NONE && inFlight;
+-
+-    // Once we have been bootstrapped from an external position estimate, allow
+-    // subsequent setLatLng calls to update position regardless of the dead-reckon
+-    // freshness check. The AID_ABSOLUTE keepalive in setAidingMode() refreshes
+-    // lastGpsPosPassTime_ms every cycle, so without this override the dead-reckon
+-    // gate would reject every companion fix after the first bootstrap.
++        validOrigin && PV_AidingMode == AID_NONE;
++
++    // Bypass the dead-reckon freshness gate in two cases:
++    //  1. We're bootstrapping (first call): EKF init pins lastGpsPosPassTime_ms
++    //     to imuSampleTime_ms, so the freshness gate would falsely block the
++    //     bootstrap for the first ~deadReckonDeclare_ms (~4s) even though no
++    //     GPS is actually present.
++    //  2. We're already bootstrapped (_has_forced_position true): the
++    //     AID_ABSOLUTE keepalive in setAidingMode refreshes
++    //     lastGpsPosPassTime_ms every cycle, so without this override the
++    //     freshness gate would reject every companion fix after the first.
+     const bool deadReckonGate =
+-        !_has_forced_position &&
++        !_has_forced_position && !bootstrap_allowed &&
+         (imuSampleTime_ms - lastGpsPosPassTime_ms) < frontend->deadReckonDeclare_ms;
+     if (deadReckonGate ||
+         (PV_AidingMode == AID_NONE && !bootstrap_allowed) ||
+@@ -252,6 +265,39 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
+         P[4][4] = sq(25.0f);
+         P[5][5] = sq(25.0f);
+ 
++        // Seed the velocity STATE to airspeed * body-forward direction (in NED).
++        // Without this, velocity state stays at ~0 from AID_NONE constant-position
++        // fusion. The airspeed observation TAS^2 = |v - wind|^2 has TWO solutions
++        // for v given wind=0 and yaw: forward (+22 m/s body-x) and backward
++        // (-22 m/s body-x). Sideslip = 0 doesn't break the tie. From v=0 the
++        // linearised Kalman update follows whichever side noise pushes it
++        // toward first, which in SITL's clean physics is often backward, which
++        // makes the EKF report the plane moving 180 deg from reality. The
++        // L1 navigator then commands corrective turns that produce the observed
++        // circling. Pre-seeding velocity to the forward direction guarantees
++        // the filter stays in the forward solution branch.
++        const auto *arsp = dal.airspeed();
++        if (arsp != nullptr && arsp->healthy(selected_airspeed) && arsp->use(selected_airspeed)) {
++            const ftype tas = ftype(arsp->get_airspeed(selected_airspeed)) * dal.get_EAS2TAS();
++            // Only seed if we have enough airspeed to be confident the plane is
++            // actually moving forward (covered pitot or stationary plane reads ~0).
++            // On ground, leave velocity at 0; stationary zero-vel fusion holds it
++            // there, and after takeoff airspeed/sideslip fusion grows it naturally.
++            if (tas > 5.0f) {
++                Vector3F tempEuler;
++                stateStruct.quat.to_euler(tempEuler.x, tempEuler.y, tempEuler.z);
++                const ftype yaw = tempEuler.z;
++                stateStruct.velocity.x = tas * cosF(yaw);
++                stateStruct.velocity.y = tas * sinF(yaw);
++                // Also update the output predictor so consumers see consistent
++                // velocity immediately, not zero-then-jump.
++                outputDataNew.velocity.x = stateStruct.velocity.x;
++                outputDataNew.velocity.y = stateStruct.velocity.y;
++                outputDataDelayed.velocity.x = stateStruct.velocity.x;
++                outputDataDelayed.velocity.y = stateStruct.velocity.y;
++            }
++        }
++
+         // Transition to AID_ABSOLUTE and refresh timeouts so the health checks in
+         // setAidingMode() don't immediately push us back to AID_NONE.
+         PV_AidingMode = AID_ABSOLUTE;
+@@ -267,6 +313,45 @@ bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t ti
+ 
+     return true;
+ }
++
++// External-position-bootstrap: directly set the EKF's wind state. The companion
++// supplies the wind vector in NED frame; the EKF cannot otherwise solve for it
++// when there is no GPS aiding (velocity and wind are jointly unobservable from
++// TAS + sideslip alone, see the airspeed/sideslip fusion math in
++// AP_NavEKF3_AirDataFusion.cpp). The wind state is then held frozen for the
++// duration of bootstrap mode via the !_has_forced_position gate on wind
++// learning in setWindMagStateLearningMode().
++bool NavEKF3_core::setExternalWind(float windN, float windE, float windAccuracy)
++{
++    if (!statesInitialised) {
++        return false;
++    }
++    // On the ground the EKF uses stationary zero-velocity fusion, not
++    // airspeed/sideslip fusion, so the wind state has no role and setting
++    // it can cause spurious drift via the (vel - wind) terms used in
++    // certain ground-detection / output paths. Reject the call here; the
++    // companion should re-send once airborne.
++    if (onGround) {
++        GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
++                      "EKF3 IMU%u wind set rejected (on ground)",
++                      (unsigned)imu_index);
++        return false;
++    }
++    stateStruct.wind_vel.x = windN;
++    stateStruct.wind_vel.y = windE;
++    // Zero off-diagonals before setting variance so the covariance update is
++    // consistent (otherwise stale cross-terms could be a source of bad
++    // Kalman gains in the next fusion step).
++    zeroCols(P, 22, 23);
++    zeroRows(P, 22, 23);
++    P[22][22] = sq(MAX(windAccuracy, 0.1f));
++    P[23][23] = sq(MAX(windAccuracy, 0.1f));
++    windStatesAligned = true;
++    GCS_SEND_TEXT(MAV_SEVERITY_INFO,
++                  "EKF3 IMU%u wind set N=%.1f E=%.1f",
++                  (unsigned)imu_index, (double)windN, (double)windE);
++    return true;
++}
+ #endif // EK3_FEATURE_POSITION_RESET
+ 
+ 
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_core.h b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+index 2656ff4255..bdebe925db 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_core.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+@@ -235,6 +235,9 @@ public:
+     // Returns true if the set was successful
+     bool setLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms);
+ 
++    // External-position-bootstrap: set wind state directly. See NavEKF3::setExternalWind.
++    bool setExternalWind(float windN, float windE, float windAccuracy);
++
+     // Popoluates the WMM data structure with the field at the given location
+     void setEarthFieldFromLocation(const Location &loc);
+ 
+-- 
+2.39.2 (Apple Git-143)
+
