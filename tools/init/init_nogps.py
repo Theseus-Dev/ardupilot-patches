@@ -31,6 +31,23 @@ from pymavlink import mavutil
 
 
 CONFIG_DEFAULT = os.path.join(os.path.dirname(__file__), "init_nogps.yaml")
+MAV_CMD_EXTERNAL_POSITION_ESTIMATE = getattr(
+    mavutil.mavlink,
+    "MAV_CMD_EXTERNAL_POSITION_ESTIMATE",
+    43003,
+)
+MAV_CMD_EXTERNAL_WIND_ESTIMATE = getattr(
+    mavutil.mavlink,
+    "MAV_CMD_EXTERNAL_WIND_ESTIMATE",
+    43004,
+)
+MAV_RESULT_NAMES = {
+    mavutil.mavlink.MAV_RESULT_ACCEPTED: "ACCEPTED",
+    mavutil.mavlink.MAV_RESULT_TEMPORARILY_REJECTED: "TEMPORARILY_REJECTED",
+    mavutil.mavlink.MAV_RESULT_DENIED: "DENIED",
+    mavutil.mavlink.MAV_RESULT_UNSUPPORTED: "UNSUPPORTED",
+    mavutil.mavlink.MAV_RESULT_FAILED: "FAILED",
+}
 
 
 def log(msg: str) -> None:
@@ -54,6 +71,35 @@ def wait_for_statustext(mav, needle: str, timeout: float) -> bool:
             log(f"  ✓ confirmed: {msg.text}")
             return True
     return False
+
+
+def wait_for_statustext_any(mav, needles: list[str], timeout: float):
+    """Return the matched STATUSTEXT and needle, or (None, None) on timeout."""
+    t0 = time.time()
+    needles_l = [needle.lower() for needle in needles]
+    while time.time() - t0 < timeout:
+        msg = mav.recv_match(type="STATUSTEXT", blocking=True, timeout=0.5)
+        if not msg:
+            continue
+        text_l = msg.text.lower()
+        for needle, needle_l in zip(needles, needles_l):
+            if needle_l in text_l:
+                log(f"  ✓ confirmed: {msg.text}")
+                return msg, needle
+    return None, None
+
+
+def wait_for_command_ack(mav, command: int, timeout: float = 3.0):
+    """Block until a COMMAND_ACK for `command` arrives, or timeout."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        ack = mav.recv_match(type="COMMAND_ACK", blocking=True, timeout=0.5)
+        if ack and ack.command == command:
+            name = MAV_RESULT_NAMES.get(ack.result, f"RESULT_{ack.result}")
+            log(f"  ack result={ack.result}  ({name})")
+            return ack
+    log("  ⚠ no COMMAND_ACK received")
+    return None
 
 
 def step_origin(mav, cfg) -> None:
@@ -82,9 +128,7 @@ def step_home(mav, cfg) -> None:
         int(o["lon"] * 1e7),
         float(o["alt"]),
     )
-    ack = mav.recv_match(type="COMMAND_ACK", blocking=True, timeout=3)
-    if ack and ack.command == mavutil.mavlink.MAV_CMD_DO_SET_HOME:
-        log(f"  ack result={ack.result}  ({'ACCEPTED' if ack.result == 0 else 'FAILED'})")
+    wait_for_command_ack(mav, mavutil.mavlink.MAV_CMD_DO_SET_HOME)
     time.sleep(cfg["delays_s"]["after_home"])
 
 
@@ -94,7 +138,7 @@ def step_position(mav, cfg) -> bool:
     mav.mav.command_int_send(
         mav.target_system, mav.target_component,
         mavutil.mavlink.MAV_FRAME_GLOBAL,
-        mavutil.mavlink.MAV_CMD_EXTERNAL_POSITION_ESTIMATE,
+        MAV_CMD_EXTERNAL_POSITION_ESTIMATE,
         0, 0,
         float(time.time()),           # param1: transmit unix time (seconds)
         0.05,                          # param2: processing delay (seconds)
@@ -104,6 +148,11 @@ def step_position(mav, cfg) -> bool:
         int(p["lon"] * 1e7),
         float("nan"),                  # alt: NaN means "use EKF height"
     )
+    ack = wait_for_command_ack(mav, MAV_CMD_EXTERNAL_POSITION_ESTIMATE)
+    if ack and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+        return True
+    if ack and ack.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+        return False
     time.sleep(cfg["delays_s"]["after_position"])
     if cfg["verify"]["bootstrap_statustext"]:
         if not wait_for_statustext(mav, "aiding from external pos",
@@ -119,7 +168,7 @@ def step_wind(mav, cfg) -> bool:
     mav.mav.command_int_send(
         mav.target_system, mav.target_component,
         mavutil.mavlink.MAV_FRAME_GLOBAL,
-        mavutil.mavlink.MAV_CMD_EXTERNAL_WIND_ESTIMATE,
+        MAV_CMD_EXTERNAL_WIND_ESTIMATE,
         0, 0,
         float(w["speed_ms"]),          # param1: wind speed (m/s)
         0,                             # param2: speed accuracy (unused)
@@ -129,8 +178,15 @@ def step_wind(mav, cfg) -> bool:
     )
     time.sleep(cfg["delays_s"]["after_wind"])
     if cfg["verify"]["wind_statustext"]:
-        if not wait_for_statustext(mav, "wind set",
-                                    cfg["verify"]["timeout_s"]):
+        _msg, needle = wait_for_statustext_any(
+            mav,
+            ["wind set rejected", "wind set N="],
+            cfg["verify"]["timeout_s"],
+        )
+        if needle == "wind set rejected":
+            log("  ⚠ wind estimate was rejected")
+            return False
+        if needle != "wind set N=":
             log("  ⚠ no 'wind set' STATUSTEXT — wind reset may have failed")
             return False
     return True
@@ -149,7 +205,14 @@ def main() -> int:
         autoreconnect=True,
     )
     mav.wait_heartbeat(timeout=15)
-    log(f"heartbeat OK  (sysid={mav.target_system}  compid={mav.target_component})")
+    heartbeat_sysid = mav.target_system
+    heartbeat_compid = mav.target_component
+    mav.target_system = m.get("target_system", heartbeat_sysid)
+    mav.target_component = m.get("target_component", 1)
+    log(
+        f"heartbeat OK  (sysid={heartbeat_sysid}  compid={heartbeat_compid}); "
+        f"targeting sysid={mav.target_system} compid={mav.target_component}"
+    )
 
     step_origin(mav, cfg)
     step_home(mav, cfg)
