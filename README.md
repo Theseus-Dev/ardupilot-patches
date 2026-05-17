@@ -60,6 +60,7 @@ patches/
     0002-AP_NavEKF3-keep-filter-healthy-and-wind-frozen-durin.patch
     0003-AP_NavEKF3-detect-inFlight-from-airspeed-and-baro-wh.patch
     0004-AP_NavEKF3-companion-driven-position-wind-ground-boo.patch
+    0005-AP_NavEKF3-learn-wind-only-while-external-position-.patch
 ```
 
 ### What the 03 series fixes
@@ -88,6 +89,11 @@ behaviour is unchanged for users without it.
    added in the 02 series, so only the first companion fix is accepted.
    Bypass the gate when `_has_forced_position` is set so subsequent
    fixes update position as the README intended.
+5. **0005 (`AP_NavEKF3_Control.cpp`, `AP_NavEKF3_core.cpp`)** — allow
+   wind learning only while external position fixes are fresh, then freeze
+   wind again once fixes go stale. Preserve the wind covariance diagonal
+   when wind is frozen so injected or learned wind is not logged as exact
+   truth.
 
 ## How to apply
 
@@ -120,10 +126,10 @@ Expected sequence from a companion computer (e.g. Cyclops):
 | Stage | Command | Effect |
 |---|---|---|
 | Boot | `SET_GPS_GLOBAL_ORIGIN` (lat/lon) | Sets `validOrigin`. EKF starts publishing `LOCAL_POSITION_NED` at origin (0,0 NE). Companion can now come up. |
-| Pre-flight (ground) | none | EKF stays in `AID_NONE`. Companion fixes (if sent) are rejected. |
+| Pre-flight (ground) | none | EKF stays in `AID_NONE`. Companion fixes can initialise the forced-position bootstrap when configured. |
 | Takeoff | (Plane vehicle code flips `inFlight=true`) | Bootstrap becomes available. |
 | First fix post-takeoff | `MAV_CMD_EXTERNAL_POSITION_ESTIMATE` (43003) | Transitions to `AID_ABSOLUTE`. GCS message: `EKF3 IMUx aiding from external pos`. |
-| Cruise | `MAV_CMD_EXTERNAL_POSITION_ESTIMATE` at companion cadence | Standard position resets. Velocity interpolated via TAS + sideslip + IMU between fixes. |
+| Cruise | `MAV_CMD_EXTERNAL_POSITION_ESTIMATE` at companion cadence | Standard position resets. Velocity interpolated via TAS + sideslip + IMU between fixes. Wind can learn while fixes are fresh, then freezes once fixes go stale. |
 
 ## Parameter to set on the vehicle
 
@@ -144,10 +150,10 @@ the zero-velocity fusion infrastructure was added more recently.
 
 ## Tradeoffs / known issues
 
-- Wind state is **not** frozen — it learns naturally once `|velocity| > 5 m/s`.
-  This adds wind-shift adaptivity at the cost of some bias-absorption risk
-  between fixes. For typical 500m / ~20s fix cadence, the absorbed drift is
-  bounded.
+- Wind state is learnable only while external position fixes are fresh. Once
+  fixes go stale, wind is frozen again to avoid velocity/wind co-drift during
+  pure no-GPS dead reckoning. The frozen wind covariance diagonal is preserved
+  instead of being zeroed, so a held wind state is not represented as exact.
 - The TAS innovation gate is preserved (not bypassed). Recovery from a stuck
   pitot eventually falls through to the existing `(tasTimeout && posTimeout)`
   fallback path, which forces fusion through after the timeouts age.

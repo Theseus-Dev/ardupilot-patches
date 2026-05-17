@@ -35,7 +35,7 @@ ON GROUND, BEFORE ARM:
      → STATUSTEXT: "EKF3 IMUx aiding from external pos"
 
   4. MAV_CMD_EXTERNAL_WIND_ESTIMATE  (43004)  speed, direction
-     → EKF wind state pinned to companion-supplied value
+     → EKF wind state initialised from companion-supplied value
      → STATUSTEXT: "EKF3 IMUx wind set N=... E=..."
 
 THEN: arm, takeoff (whatever mode you take off in).
@@ -45,7 +45,7 @@ IN FLIGHT:
   5. MAV_CMD_EXTERNAL_POSITION_ESTIMATE  at companion cadence
      (Cyclops conop: ~500m / ~20s)
      → position state reset to each new fix
-     → velocity state unchanged (anchored by airspeed/sideslip + frozen wind)
+     → wind can learn while fixes are fresh, then freezes if fixes go stale
 ```
 
 ## Validating it worked
