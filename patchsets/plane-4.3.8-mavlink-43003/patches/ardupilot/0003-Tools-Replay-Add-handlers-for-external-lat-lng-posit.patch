@@ -1,0 +1,63 @@
+From f90eefd9e284cc3ccda4a9ff58305f65d5b8614e Mon Sep 17 00:00:00 2001
+From: Paul Riseborough <gncsolns@gmail.com>
+Date: Sun, 14 May 2023 09:55:43 +1000
+Subject: [PATCH 3/7] Tools/Replay: Add handlers for external lat lng position
+ set
+
+(cherry picked from commit 26d800cd63c6a770e6a004c6488c444648d39103)
+---
+ Tools/Replay/LR_MsgHandler.cpp | 6 ++++++
+ Tools/Replay/LR_MsgHandler.h   | 6 ++++++
+ Tools/Replay/LogReader.cpp     | 2 ++
+ 3 files changed, 14 insertions(+)
+
+diff --git a/Tools/Replay/LR_MsgHandler.cpp b/Tools/Replay/LR_MsgHandler.cpp
+index 8b9d2bd431..cbdca233af 100644
+--- a/Tools/Replay/LR_MsgHandler.cpp
++++ b/Tools/Replay/LR_MsgHandler.cpp
+@@ -289,6 +289,12 @@ void LR_MsgHandler_REPH::process_message(uint8_t *msgbytes)
+     AP::dal().handle_message(msg, ekf2, ekf3);
+ }
+ 
++void LR_MsgHandler_RSLL::process_message(uint8_t *msgbytes)
++{
++    MSG_CREATE(RSLL, msgbytes);
++    AP::dal().handle_message(msg, ekf2, ekf3);
++}
++
+ void LR_MsgHandler_REVH::process_message(uint8_t *msgbytes)
+ {
+     MSG_CREATE(REVH, msgbytes);
+diff --git a/Tools/Replay/LR_MsgHandler.h b/Tools/Replay/LR_MsgHandler.h
+index b258f496e7..4e30a6571d 100644
+--- a/Tools/Replay/LR_MsgHandler.h
++++ b/Tools/Replay/LR_MsgHandler.h
+@@ -57,6 +57,12 @@ class LR_MsgHandler_REPH : public LR_MsgHandler_EKF
+     void process_message(uint8_t *msg) override;
+ };
+ 
++class LR_MsgHandler_RSLL : public LR_MsgHandler_EKF
++{
++    using LR_MsgHandler_EKF::LR_MsgHandler_EKF;
++    void process_message(uint8_t *msg) override;
++};
++
+ class LR_MsgHandler_REVH : public LR_MsgHandler_EKF
+ {
+     using LR_MsgHandler_EKF::LR_MsgHandler_EKF;
+diff --git a/Tools/Replay/LogReader.cpp b/Tools/Replay/LogReader.cpp
+index d36c3da3fe..9a84053ab8 100644
+--- a/Tools/Replay/LogReader.cpp
++++ b/Tools/Replay/LogReader.cpp
+@@ -118,6 +118,8 @@ bool LogReader::handle_log_format_msg(const struct log_Format &f)
+         msgparser[f.type] = new LR_MsgHandler_ROFH(formats[f.type], ekf2, ekf3);
+     } else if (streq(name, "REPH")) {
+         msgparser[f.type] = new LR_MsgHandler_REPH(formats[f.type], ekf2, ekf3);
++	} else if (streq(name, "RSLL")) {
++        msgparser[f.type] = new LR_MsgHandler_RSLL(formats[f.type], ekf2, ekf3);
+     } else if (streq(name, "REVH")) {
+         msgparser[f.type] = new LR_MsgHandler_REVH(formats[f.type], ekf2, ekf3);
+     } else if (streq(name, "RWOH")) {
+-- 
+2.34.1
+

@@ -1,4 +1,4 @@
-# Sample initialization config for theseus-ekf-patches no-GPS bootstrap.
+# Sample initialization config for the Plane 4.6.3 no-GPS init patchset.
 #
 # Edit the position/wind values before each flight (or generate from your
 # companion's nav pipeline) and run init_nogps.py.

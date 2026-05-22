@@ -1,0 +1,33 @@
+From 5cffe555c4b28ee3cf4c6e426fbedeb74c7cae1f Mon Sep 17 00:00:00 2001
+From: Ian Laffey <ian@theseus.us>
+Date: Fri, 22 May 2026 13:54:37 +0300
+Subject: [PATCH] ardupilotmega: add MAV_CMD_EXTERNAL_POSITION_ESTIMATE
+
+---
+ message_definitions/v1.0/ardupilotmega.xml | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/message_definitions/v1.0/ardupilotmega.xml b/message_definitions/v1.0/ardupilotmega.xml
+index 7d78f172..881a2794 100644
+--- a/message_definitions/v1.0/ardupilotmega.xml
++++ b/message_definitions/v1.0/ardupilotmega.xml
+@@ -332,6 +332,16 @@
+         <param index="6">Empty</param>
+         <param index="7">Empty</param>
+       </entry>
++      <entry value="43003" name="MAV_CMD_EXTERNAL_POSITION_ESTIMATE" hasLocation="true" isDestination="false">
++        <description>Provide an external position estimate for use when dead-reckoning. This is meant to be used for occasional position resets that may be provided by a external system such as a remote pilot using landmarks over a video link.</description>
++        <param index="1" label="transmission_time" units="s">Timestamp that this message was sent as a time in the transmitters time domain. The sender should wrap this time back to zero based on required timing accuracy for the application and the limitations of a 32 bit float. For example, wrapping at 10 hours would give approximately 1ms accuracy. Recipient must handle time wrap in any timing jitter correction applied to this field. Wrap rollover time should not be at not more than 250 seconds, which would give approximately 10 microsecond accuracy.</param>
++        <param index="2" label="processing_time" units="s">The time spent in processing the sensor data that is the basis for this position. The recipient can use this to improve time alignment of the data. Set to zero if not known.</param>
++        <param index="3" label="accuracy">estimated one standard deviation accuracy of the measurement. Set to NaN if not known.</param>
++        <param index="4">Empty</param>
++        <param index="5" label="Latitude">Latitude</param>
++        <param index="6" label="Longitude">Longitude</param>
++        <param index="7" label="Altitude" units="m">Altitude, not used. Should be sent as NaN. May be supported in a future version of this message.</param>
++      </entry>
+     </enum>
+     <enum name="SCRIPTING_CMD">
+       <entry value="0" name="SCRIPTING_CMD_REPL_START">
+-- 
+2.34.1
+

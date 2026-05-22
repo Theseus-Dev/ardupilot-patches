@@ -1,9 +1,9 @@
-# Theseus EKF Patches: SITL No-GPS Verification
+# Plane 4.6.3 No-GPS Init: SITL Verification
 
 Date: 2026-05-13
-Branch tested: `theseus-cyclops-bootstrap` (Plane-4.6.3 base + theseus-ekf-patches)
-Repo: `/Users/ianlaffey/ardupilot`
-Patches: `/Users/ianlaffey/theseus-ekf-patches/`
+Branch tested: `plane-4.6.3-nogps-init` (Plane-4.6.3 base + this patchset)
+Repo tested: local ArduPilot checkout
+Patchset: `patchsets/plane-4.6.3-nogps-init`
 
 ## Goal
 
@@ -13,7 +13,7 @@ the air via `MAV_CMD_EXTERNAL_POSITION_ESTIMATE` (43003).
 
 ## Result
 
-**PASS.** With the four follow-on fixes documented below, on a fresh boot
+**PASS.** With the follow-on fixes documented below, on a fresh boot
 with `SIM_GPS_DISABLE=1`, `GPS1_TYPE=0`, and `EK3_OPTIONS=8`:
 
 - EKF3 initialises on the ground from IMU + compass alone (no GPS lock).

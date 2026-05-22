@@ -1,0 +1,122 @@
+From 854017a182534abc50a63fd4e25e10a31c5c2b2a Mon Sep 17 00:00:00 2001
+From: Paul Riseborough <gncsolns@gmail.com>
+Date: Sun, 14 May 2023 09:55:02 +1000
+Subject: [PATCH 1/7] AP_DAL: Add handlers for external lat lng position set
+
+(cherry picked from commit 1f8bf4f2865873b624400300976de85c31089423)
+---
+ libraries/AP_DAL/AP_DAL.cpp     | 22 ++++++++++++++++++++++
+ libraries/AP_DAL/AP_DAL.h       |  4 ++++
+ libraries/AP_DAL/LogStructure.h | 13 +++++++++++++
+ 3 files changed, 39 insertions(+)
+
+diff --git a/libraries/AP_DAL/AP_DAL.cpp b/libraries/AP_DAL/AP_DAL.cpp
+index 706cb6ac23..dc3519b32f 100644
+--- a/libraries/AP_DAL/AP_DAL.cpp
++++ b/libraries/AP_DAL/AP_DAL.cpp
+@@ -346,6 +346,17 @@ void AP_DAL::writeExtNavData(const Vector3f &pos, const Quaternion &quat, float
+     WRITE_REPLAY_BLOCK_IFCHANGED(REPH, _REPH, old);
+ }
+ 
++void AP_DAL::log_SetLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms)
++{
++    end_frame();
++    const log_RSLL old = _RSLL;
++    _RSLL.lat = loc.lat;
++    _RSLL.lng = loc.lng;
++    _RSLL.posAccSD = posAccuracy;
++    _RSLL.timestamp_ms = timestamp_ms;
++    WRITE_REPLAY_BLOCK_IFCHANGED(RSLL, _RSLL, old);
++}
++
+ // log external velocity data
+ void AP_DAL::writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeStamp_ms, uint16_t delay_ms)
+ {
+@@ -479,6 +490,17 @@ void AP_DAL::handle_message(const log_RBOH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3)
+     // note that EKF2 does not support body frame odomotry
+     ekf3.writeBodyFrameOdom(msg.quality, msg.delPos, msg.delAng, msg.delTime, msg.timeStamp_ms, msg.delay_ms, msg.posOffset);
+ }
++
++/*
++  handle position reset
++ */
++void AP_DAL::handle_message(const log_RSLL &msg, NavEKF2 &ekf2, NavEKF3 &ekf3)
++{
++    _RSLL = msg;
++    // note that EKF2 does not support body frame odomotry
++    const Location loc {msg.lat, msg.lng, 0, Location::AltFrame::ABSOLUTE };
++    ekf3.setLatLng(loc, msg.posAccSD, msg.timestamp_ms);
++}
+ #endif // APM_BUILD_Replay
+ 
+ namespace AP {
+diff --git a/libraries/AP_DAL/AP_DAL.h b/libraries/AP_DAL/AP_DAL.h
+index 4c0c945540..2ec6f591bf 100644
+--- a/libraries/AP_DAL/AP_DAL.h
++++ b/libraries/AP_DAL/AP_DAL.h
+@@ -82,6 +82,8 @@ public:
+ 
+     void log_event3(Event event);
+     void log_SetOriginLLH3(const Location &loc);
++    void log_SetLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms);
++
+     void log_writeDefaultAirSpeed3(const float aspeed, const float uncertainty);
+     void log_writeEulerYawAngle(float yawAngle, float yawAngleErr, uint32_t timeStamp_ms, uint8_t type);
+ 
+@@ -311,6 +313,7 @@ public:
+     void handle_message(const log_REVH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
+     void handle_message(const log_RWOH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
+     void handle_message(const log_RBOH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
++    void handle_message(const log_RSLL &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
+ 
+     // map core number for replay
+     uint8_t logging_core(uint8_t c) const;
+@@ -334,6 +337,7 @@ private:
+     struct log_REVH _REVH;
+     struct log_RWOH _RWOH;
+     struct log_RBOH _RBOH;
++    struct log_RSLL _RSLL;
+ 
+     // cached variables for speed:
+     uint32_t _micros;
+diff --git a/libraries/AP_DAL/LogStructure.h b/libraries/AP_DAL/LogStructure.h
+index 527f357c08..2e70cbd242 100644
+--- a/libraries/AP_DAL/LogStructure.h
++++ b/libraries/AP_DAL/LogStructure.h
+@@ -35,6 +35,7 @@
+     LOG_RMGI_MSG, \
+     LOG_ROFH_MSG, \
+     LOG_REPH_MSG, \
++    LOG_RSLL_MSG, \
+     LOG_REVH_MSG, \
+     LOG_RWOH_MSG, \
+     LOG_RBOH_MSG
+@@ -323,6 +324,16 @@ struct log_REPH {
+     uint8_t _end;
+ };
+ 
++// @LoggerMessage: RSLL
++// @Description: Replay Set Lat Lng event
++struct log_RSLL {
++    int32_t lat; // WGS-84 latitude in 1E-7 degrees
++    int32_t lng; // WGS-84 longitude in 1E7 degrees
++    float posAccSD; // horizontal position 1 STD uncertainty (m)
++    uint32_t timestamp_ms;
++    uint8_t _end;
++};
++
+ // @LoggerMessage: REVH
+ // @Description: Replay external position data
+ struct log_REVH {
+@@ -416,6 +427,8 @@ struct log_RBOH {
+       "ROFH", "ffffIfffB", "FX,FY,GX,GY,Tms,PX,PY,PZ,Qual", "---------", "---------" }, \
+     { LOG_REPH_MSG, RLOG_SIZE(REPH),                                   \
+       "REPH", "fffffffffIIH", "PX,PY,PZ,Q1,Q2,Q3,Q4,PEr,AEr,TS,RT,D", "------------", "------------" }, \
++    { LOG_RSLL_MSG, RLOG_SIZE(RSLL),                         \
++      "RSLL", "IIfI", "Lat,Lng,PosAccSD,TS", "DU--", "GG--" }, \
+     { LOG_REVH_MSG, RLOG_SIZE(REVH),                                   \
+       "REVH", "ffffIH", "VX,VY,VZ,Er,TS,D", "------", "------" }, \
+     { LOG_RWOH_MSG, RLOG_SIZE(RWOH),                                   \
+-- 
+2.34.1
+

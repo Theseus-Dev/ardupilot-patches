@@ -1,0 +1,27 @@
+From 2d6c87326b48c71b7dad26b9f2e69cc6e861dff6 Mon Sep 17 00:00:00 2001
+From: Paul Riseborough <gncsolns@gmail.com>
+Date: Sun, 14 May 2023 09:56:34 +1000
+Subject: [PATCH 4/7] Tools/autotest: Add external lat lng position set to
+ replay message list
+
+(cherry picked from commit bc878e14afc21e871c25e755737b0bfccbfc069d)
+---
+ Tools/autotest/common.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Tools/autotest/common.py b/Tools/autotest/common.py
+index 16aa49a89a..e256c570ca 100644
+--- a/Tools/autotest/common.py
++++ b/Tools/autotest/common.py
+@@ -2501,7 +2501,7 @@ class AutoTest(ABC):
+         REPLAY_MSGS = ['RFRH', 'RFRF', 'REV2', 'RSO2', 'RWA2', 'REV3', 'RSO3', 'RWA3', 'RMGI',
+                        'REY3', 'RFRN', 'RISH', 'RISI', 'RISJ', 'RBRH', 'RBRI', 'RRNH', 'RRNI',
+                        'RGPH', 'RGPI', 'RGPJ', 'RASH', 'RASI', 'RBCH', 'RBCI', 'RVOH', 'RMGH',
+-                       'ROFH', 'REPH', 'REVH', 'RWOH', 'RBOH']
++                       'ROFH', 'REPH', 'REVH', 'RWOH', 'RBOH', 'RSLL']
+ 
+         docco_ids = {}
+         for thing in tree.logformat:
+-- 
+2.34.1
+

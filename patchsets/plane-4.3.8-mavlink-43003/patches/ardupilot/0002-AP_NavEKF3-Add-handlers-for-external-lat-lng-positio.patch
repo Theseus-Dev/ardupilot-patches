@@ -1,0 +1,140 @@
+From 406e421653c4fa27bc74c4c5b2d1bd8e3358669c Mon Sep 17 00:00:00 2001
+From: Paul Riseborough <gncsolns@gmail.com>
+Date: Sun, 14 May 2023 09:55:30 +1000
+Subject: [PATCH 2/7] AP_NavEKF3: Add handlers for external lat lng position
+ set
+
+(cherry picked from commit 86eeb7d3532c0a0ee756a89b17eb0523a6a5a286)
+---
+ libraries/AP_NavEKF3/AP_NavEKF3.cpp           | 20 +++++++++++
+ libraries/AP_NavEKF3/AP_NavEKF3.h             |  5 +++
+ .../AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp    | 36 +++++++++++++++++++
+ libraries/AP_NavEKF3/AP_NavEKF3_core.h        |  5 +++
+ libraries/AP_NavEKF3/AP_NavEKF3_feature.h     |  4 +++
+ 5 files changed, 70 insertions(+)
+
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3.cpp b/libraries/AP_NavEKF3/AP_NavEKF3.cpp
+index 54c59b5bd4..c66ff1a4a4 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3.cpp
+@@ -1409,6 +1409,26 @@ bool NavEKF3::setOriginLLH(const Location &loc)
+     return ret;
+ }
+ 
++bool NavEKF3::setLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms)
++{
++#if EK3_FEATURE_POSITION_RESET
++    AP::dal().log_SetLatLng(loc, posAccuracy, timestamp_ms);
++
++    if (!core) {
++        return false;
++    }
++    bool ret = false;
++    for (uint8_t i=0; i<num_cores; i++) {
++        ret |= core[i].setLatLng(loc, posAccuracy, timestamp_ms);
++    }
++    // return true if any core accepts the new origin
++    return ret;
++#else
++    return false;
++#endif // EK3_FEATURE_POSITION_RESET
++}
++
++
+ // return estimated height above ground level
+ // return false if ground height is not being estimated.
+ bool NavEKF3::getHAGL(float &HAGL) const
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3.h b/libraries/AP_NavEKF3/AP_NavEKF3.h
+index 2d14a44975..332e809b7f 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3.h
+@@ -153,6 +153,11 @@ public:
+     // Returns false if the filter has rejected the attempt to set the origin
+     bool setOriginLLH(const Location &loc);
+ 
++    // Set the EKF's NE horizontal position states and their corresponding variances from a supplied WGS-84 location and uncertainty
++    // The altitude element of the location is not used.
++    // Returns true if the set was successful
++    bool setLatLng(const Location &loc, float posErr, uint32_t timestamp_ms);
++
+     // return estimated height above ground level
+     // return false if ground height is not being estimated.
+     bool getHAGL(float &HAGL) const;
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+index a14de0bfa8..fd10601379 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp
+@@ -142,6 +142,42 @@ void NavEKF3_core::ResetPosition(resetDataSource posResetSource)
+     lastPosPassTime_ms = imuSampleTime_ms;
+ }
+ 
++#if EK3_FEATURE_POSITION_RESET
++// Sets the EKF's NE horizontal position states and their corresponding variances from a supplied WGS-84 location and uncertainty
++// The altitude element of the location is not used.
++// Returns true if the set was successful
++bool NavEKF3_core::setLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms)
++{
++    if ((imuSampleTime_ms - lastPosPassTime_ms) < frontend->deadReckonDeclare_ms ||
++        (PV_AidingMode == AID_NONE)
++        || !validOrigin) {
++        return false;
++    }
++
++    // Store the position before the reset so that we can record the reset delta
++    posResetNE.x = stateStruct.position.x;
++    posResetNE.y = stateStruct.position.y;
++
++    // reset the corresponding covariances
++    zeroRows(P,7,8);
++    zeroCols(P,7,8);
++
++    // set the variances using the position measurement noise parameter
++    P[7][7] = P[8][8] = sq(MAX(posAccuracy,frontend->_gpsHorizPosNoise));
++
++    // Correct the position for time delay relative to fusion time horizon assuming a constant velocity
++    // Limit time stamp to a range between current time and 5 seconds ago
++    const uint32_t timeStampConstrained_ms = MAX(MIN(timestamp_ms, imuSampleTime_ms), imuSampleTime_ms - 5000);
++    const int32_t delta_ms = int32_t(imuDataDelayed.time_ms - timeStampConstrained_ms);
++    const ftype delaySec = 1E-3F * ftype(delta_ms);
++    const Vector2F newPosNE = EKF_origin.get_distance_NE_ftype(loc) - stateStruct.velocity.xy() * delaySec;
++    ResetPositionNE(newPosNE.x,newPosNE.y);
++
++    return true;
++}
++#endif // EK3_FEATURE_POSITION_RESET
++
++
+ // reset the stateStruct's NE position to the specified position
+ //    posResetNE is updated to hold the change in position
+ //    storedOutput, outputDataNew and outputDataDelayed are updated with the change in position
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_core.h b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+index d329b6da5f..60912bfa8e 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_core.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_core.h
+@@ -215,6 +215,11 @@ public:
+     // returns false if Absolute aiding and GPS is being used or if the origin is already set
+     bool setOriginLLH(const Location &loc);
+ 
++    // Set the EKF's NE horizontal position states and their corresponding variances from a supplied WGS-84 location and uncertainty
++    // The altitude element of the location is not used.
++    // Returns true if the set was successful
++    bool setLatLng(const Location &loc, float posAccuracy, uint32_t timestamp_ms);
++
+     // return estimated height above ground level
+     // return false if ground height is not being estimated.
+     bool getHAGL(float &HAGL) const;
+diff --git a/libraries/AP_NavEKF3/AP_NavEKF3_feature.h b/libraries/AP_NavEKF3/AP_NavEKF3_feature.h
+index ad8d62fd00..a00ac149fd 100644
+--- a/libraries/AP_NavEKF3/AP_NavEKF3_feature.h
++++ b/libraries/AP_NavEKF3/AP_NavEKF3_feature.h
+@@ -25,3 +25,7 @@
+ #define EK3_FEATURE_DRAG_FUSION EK3_FEATURE_ALL || BOARD_FLASH_SIZE > 1024
+ #endif
+ 
++// position reset on 2M boards
++#ifndef EK3_FEATURE_POSITION_RESET
++#define EK3_FEATURE_POSITION_RESET EK3_FEATURE_ALL || BOARD_FLASH_SIZE > 1024
++#endif
+-- 
+2.34.1
+

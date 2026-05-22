@@ -1,55 +1,43 @@
 #!/usr/bin/env bash
-# Apply the theseus-ekf-patches series to an ArduPilot checkout.
-#
-# Usage:
-#   ./apply.sh <ardupilot-dir> [<target-tag>]
-#
-# Examples:
-#   ./apply.sh /path/to/ardupilot Plane-4.6.3
-#   ./apply.sh /path/to/ardupilot                  # apply to current HEAD
+# Dispatch to one of the independent patchset apply scripts.
 set -euo pipefail
 
-AP_DIR="${1:?usage: $0 <ardupilot-dir> [<target-tag>]}"
-TARGET_TAG="${2:-}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PATCH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+usage() {
+    cat <<'USAGE'
+Usage:
+  ./apply.sh <patchset> <ardupilot-dir> [target-tag]
 
-cd "$AP_DIR"
+Patchsets:
+  plane-4.6.3-nogps-init
+  plane-4.3.8-mavlink-43003
 
-if [[ -n "$TARGET_TAG" ]]; then
-    echo ">> Checking out $TARGET_TAG"
-    git checkout "$TARGET_TAG"
+Examples:
+  ./apply.sh plane-4.6.3-nogps-init /path/to/ardupilot Plane-4.6.3
+  ./apply.sh plane-4.3.8-mavlink-43003 /path/to/ardupilot Plane-4.3.8
+USAGE
+}
+
+if [[ $# -lt 2 ]]; then
+    usage
+    exit 2
 fi
 
-BRANCH="theseus-cyclops-bootstrap-$(date +%Y%m%d-%H%M%S)"
-echo ">> Creating branch $BRANCH"
-git checkout -b "$BRANCH"
+PATCHSET="$1"
+shift
 
-echo ">> Applying upstream backport patches"
-for p in "$PATCH_ROOT/patches/01-upstream-backport/"*.patch; do
-    echo "   - $(basename "$p")"
-    git am --3way "$p"
-done
+case "$PATCHSET" in
+    plane-4.6.3-nogps-init)
+        exec "$ROOT/patchsets/plane-4.6.3-nogps-init/apply.sh" "$@"
+        ;;
+    plane-4.3.8-mavlink-43003)
+        exec "$ROOT/patchsets/plane-4.3.8-mavlink-43003/apply.sh" "$@"
+        ;;
+    *)
+        echo "Unknown patchset: $PATCHSET" >&2
+        usage
+        exit 2
+        ;;
+esac
 
-echo ">> Applying cyclops bootstrap patches"
-for p in "$PATCH_ROOT/patches/02-cyclops-bootstrap/"*.patch; do
-    echo "   - $(basename "$p")"
-    git am --3way "$p"
-done
-
-echo ">> Applying SITL no-GPS fix patches"
-for p in "$PATCH_ROOT/patches/03-sitl-nogps-fixes/"*.patch; do
-    echo "   - $(basename "$p")"
-    git am --3way "$p"
-done
-
-total_patches=$(find "$PATCH_ROOT/patches" -name '*.patch' | wc -l | tr -d ' ')
-echo ""
-echo "Done. Commits added on top of $(git rev-parse --short HEAD~${total_patches})..HEAD:"
-git log --oneline "HEAD~${total_patches}..HEAD"
-echo ""
-echo "Next steps:"
-echo "  cd $AP_DIR"
-echo "  git submodule update --init --recursive"
-echo "  ./waf configure --board <your-board>"
-echo "  ./waf plane"

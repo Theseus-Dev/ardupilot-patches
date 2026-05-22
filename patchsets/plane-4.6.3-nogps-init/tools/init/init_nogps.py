@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-init_nogps.py — drive a theseus-ekf-patches plane through the on-ground
-initialization sequence using values from a YAML config.
+init_nogps.py — drive a Plane 4.6.3 no-GPS init patched plane through
+the on-ground initialization sequence using values from a YAML config.
 
 Usage:
     init_nogps.py [path/to/init_nogps.yaml]

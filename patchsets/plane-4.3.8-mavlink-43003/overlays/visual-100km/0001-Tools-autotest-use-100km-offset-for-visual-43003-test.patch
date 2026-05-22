@@ -1,0 +1,36 @@
+diff --git a/Tools/autotest/arduplane.py b/Tools/autotest/arduplane.py
+index 23c3036f97..32eb692b55 100644
+--- a/Tools/autotest/arduplane.py
++++ b/Tools/autotest/arduplane.py
+@@ -623,16 +623,18 @@ class AutoTestPlane(AutoTest):
+             timeout=5
+         )
+         loc = mavutil.location(gpi.lat*1e-7, gpi.lon*1e-7, 0, 0)
++        injected_loc = mavutil.location(gpi.lat*1e-7, gpi.lon*1e-7, 0, 0)
++        self.location_offset_ne(injected_loc, 100000, 0)
+ 
+-        self.progress("set new position with no GPS")
++        self.progress("set new position with no GPS, 100km north")
+         self.run_cmd_int(
+             mavutil.mavlink.MAV_CMD_EXTERNAL_POSITION_ESTIMATE,
+             self.get_sim_time()-1, # transmit time
+             0.5, # processing delay
+             50, # accuracy
+             0,
+-            gpi.lat+1,
+-            gpi.lon+1,
++            int(injected_loc.lat * 1e7),
++            int(injected_loc.lng * 1e7),
+             float("NaN"),    # alt
+             frame=mavutil.mavlink.MAV_FRAME_GLOBAL,
+             want_result=mavutil.mavlink.MAV_RESULT_ACCEPTED
+@@ -652,7 +654,7 @@ class AutoTestPlane(AutoTest):
+         dist = self.get_distance(loc, loc2)
+ 
+         self.progress("dist is %.1f" % dist)
+-        if dist > 200:
++        if dist < 50000 or dist > 150000:
+             raise NotAchievedException("Position error dist=%.1f" % dist)
+ 
+         self.progress("re-enable the GPS")
+

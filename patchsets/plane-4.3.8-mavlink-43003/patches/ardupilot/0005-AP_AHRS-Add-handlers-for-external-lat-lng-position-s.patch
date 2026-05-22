@@ -1,0 +1,68 @@
+From 48c924f38773d7245db5be4e8ca757a54f4ae520 Mon Sep 17 00:00:00 2001
+From: Paul Riseborough <gncsolns@gmail.com>
+Date: Sun, 14 May 2023 09:56:58 +1000
+Subject: [PATCH 5/7] AP_AHRS: Add handlers for external lat lng position set
+
+(cherry picked from commit 26cbc6b389781325adda4dcd80fce4e19a50027a)
+---
+ libraries/AP_AHRS/AP_AHRS.cpp | 10 ++++++++++
+ libraries/AP_AHRS/AP_AHRS.h   | 15 +++++++++++++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/libraries/AP_AHRS/AP_AHRS.cpp b/libraries/AP_AHRS/AP_AHRS.cpp
+index 5e38709ed7..50974b0ff4 100644
+--- a/libraries/AP_AHRS/AP_AHRS.cpp
++++ b/libraries/AP_AHRS/AP_AHRS.cpp
+@@ -1353,6 +1353,16 @@ bool AP_AHRS::set_origin(const Location &loc)
+     return false;
+ }
+ 
++#if AP_AHRS_POSITION_RESET_ENABLED
++bool AP_AHRS::handle_external_position_estimate(const Location &loc, float pos_accuracy, uint32_t timestamp_ms)
++{
++#if HAL_NAVEKF3_AVAILABLE
++    return EKF3.setLatLng(loc, pos_accuracy, timestamp_ms);
++#endif
++    return false;
++}
++#endif
++
+ // return true if inertial navigation is active
+ bool AP_AHRS::have_inertial_nav(void) const
+ {
+diff --git a/libraries/AP_AHRS/AP_AHRS.h b/libraries/AP_AHRS/AP_AHRS.h
+index d85749d26c..06294908ad 100644
+--- a/libraries/AP_AHRS/AP_AHRS.h
++++ b/libraries/AP_AHRS/AP_AHRS.h
+@@ -37,6 +37,10 @@
+ #define AP_AHRS_SIM_ENABLED AP_SIM_ENABLED
+ #endif
+ 
++#ifndef AP_AHRS_POSITION_RESET_ENABLED
++#define AP_AHRS_POSITION_RESET_ENABLED (BOARD_FLASH_SIZE>1024)
++#endif
++
+ #if AP_AHRS_SIM_ENABLED
+ #include <SITL/SITL.h>
+ #endif
+@@ -209,6 +213,17 @@ public:
+     // from which to decide the origin on its own
+     bool set_origin(const Location &loc) WARN_IF_UNUSED;
+ 
++#if AP_AHRS_POSITION_RESET_ENABLED
++    // Set the EKF's NE horizontal position states and their corresponding variances from the supplied WGS-84 location
++    // and 1-sigma horizontal position uncertainty. This can be used when the EKF is dead reckoning to periodically
++    // correct the position. If the EKF is is still using data from a postion sensor such as GPS, the position set
++    // will not be performed.
++    // pos_accuracy is the standard deviation of the horizontal position uncertainty in metres.
++    // The altitude element of the location is not used.
++    // Returns true if the set was successful.
++    bool handle_external_position_estimate(const Location &loc, float pos_accuracy, uint32_t timestamp_);
++#endif
++
+     // returns the inertial navigation origin in lat/lon/alt
+     bool get_origin(Location &ret) const WARN_IF_UNUSED;
+ 
+-- 
+2.34.1
+
