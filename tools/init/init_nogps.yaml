@@ -8,7 +8,7 @@ mavlink:
   # SITL:        tcp:127.0.0.1:5760
   # USB serial:  /dev/ttyACM0 (or COM3 on Windows)
   # Telem radio: /dev/ttyUSB0
-  connection: tcp:127.0.0.1:5760
+  connection: udp:127.0.0.1:5760
   baud: 57600                   # ignored for tcp/udp
   source_system: 254            # GCS-side sysid
   target_system: 1              # autopilot sysid (1 is default)
@@ -19,16 +19,16 @@ mavlink:
 # from the actual takeoff point, edit the script — but for a plane on a
 # runway this is the right knob.
 position:
-  lat:  -35.363261              # degrees
-  lon:  149.165230
-  alt:  584.0                   # metres MSL
+  lat:  38.19804663557886              # degrees
+  lon:  -121.79389634664082
+  alt:  30.0                   # metres MSL
   accuracy_m: 5.0               # horizontal accuracy of this estimate
 
 # Current wind. (0, 0) is acceptable when unknown but velocity tracking
 # will degrade in flight.
 wind:
-  speed_ms:  0.0                # m/s
-  direction_deg: 0.0            # 0 = from N, clockwise (standard met)
+  speed_ms:  6.0                # m/s
+  direction_deg: 225.0            # 0 = from N, clockwise (standard met)
 
 # Timing between commands. Conservative defaults for slow links.
 delays_s:
