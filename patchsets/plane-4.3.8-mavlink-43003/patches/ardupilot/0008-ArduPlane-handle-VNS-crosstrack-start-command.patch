@@ -1,0 +1,83 @@
+From 7aed132e7177e0b02a8b8be05ae7b6cd4d6c5faa Mon Sep 17 00:00:00 2001
+From: Ian Laffey <ian@theseus.us>
+Date: Wed, 27 May 2026 12:41:59 +0300
+Subject: [PATCH 8/8] ArduPlane: handle VNS crosstrack start command
+
+---
+ ArduPlane/GCS_Mavlink.cpp   | 21 ++++++++++++++++++++-
+ Tools/autotest/arduplane.py | 16 ++++++++++++++++
+ 2 files changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/ArduPlane/GCS_Mavlink.cpp b/ArduPlane/GCS_Mavlink.cpp
+index eed957f52c..d7624192a8 100644
+--- a/ArduPlane/GCS_Mavlink.cpp
++++ b/ArduPlane/GCS_Mavlink.cpp
+@@ -1097,6 +1097,26 @@ MAV_RESULT GCS_MAVLINK_Plane::handle_command_long_packet(const mavlink_command_l
+         return MAV_RESULT_ACCEPTED;
+     }
+ 
++    case MAV_CMD_WAYPOINT_USER_2: {
++        // VNS crosstrack start command. This mirrors the newer Lua script's
++        // vehicle:set_crosstrack_start(ahrs:get_location()) behavior for 4.3.8.
++        Location current_location;
++        if (!AP::ahrs().get_location(current_location)) {
++            gcs().send_text(MAV_SEVERITY_WARNING, "Crosstrack: no current position");
++            return MAV_RESULT_FAILED;
++        }
++
++        plane.prev_WP_loc = current_location;
++        plane.auto_state.crosstrack = true;
++
++        gcs().send_text(MAV_SEVERITY_INFO,
++                        "Crosstrack start set: %.7f, %.7f, %.1fm",
++                        (double)current_location.lat * 1.0e-7,
++                        (double)current_location.lng * 1.0e-7,
++                        (double)current_location.alt * 0.01);
++        return MAV_RESULT_ACCEPTED;
++    }
++
+     case MAV_CMD_DO_AUTOTUNE_ENABLE:
+         // param1 : enable/disable
+         plane.autotune_enable(!is_zero(packet.param1));
+@@ -1506,4 +1526,3 @@ MAV_LANDED_STATE GCS_MAVLINK_Plane::landed_state() const
+ 
+     return MAV_LANDED_STATE_ON_GROUND;
+ }
+-
+diff --git a/Tools/autotest/arduplane.py b/Tools/autotest/arduplane.py
+index 23c3036f97..acf4af8601 100644
+--- a/Tools/autotest/arduplane.py
++++ b/Tools/autotest/arduplane.py
+@@ -665,6 +665,21 @@ class AutoTestPlane(AutoTest):
+         self.progress("flying home")
+         self.fly_home_land_and_disarm()
+ 
++    def VNSCrosstrackStartCommand(self):
++        '''Test VNS crosstrack-start command'''
++        self.wait_ready_to_arm()
++        self.run_cmd(
++            mavutil.mavlink.MAV_CMD_WAYPOINT_USER_2,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            want_result=mavutil.mavlink.MAV_RESULT_ACCEPTED,
++        )
++
+     def DeepStall(self):
+         '''Test DeepStall Landing'''
+         # self.fly_deepstall_absolute()
+@@ -4144,6 +4159,7 @@ class AutoTestPlane(AutoTest):
+             self.MidAirDisarmDisallowed,
+             self.AltResetBadGPS,
+             self.ExternalPositionEstimate,
++            self.VNSCrosstrackStartCommand,
+         ])
+         return ret
+ 
+-- 
+2.34.1
+

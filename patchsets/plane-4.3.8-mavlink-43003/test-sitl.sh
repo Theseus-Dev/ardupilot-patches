@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Plane SITL and run the targeted MAV_CMD_EXTERNAL_POSITION_ESTIMATE test.
+# Build Plane SITL and run the targeted MAVLink command tests.
 set -euo pipefail
 
 AP_DIR="${1:?usage: $0 <ardupilot-dir>}"
@@ -18,5 +18,5 @@ Tools/autotest/autotest.py \
     --no-clean \
     --speedup=10 \
     --timeout=1200 \
-    test.Plane.ExternalPositionEstimate
-
+    test.Plane.ExternalPositionEstimate \
+    test.Plane.VNSCrosstrackStartCommand
