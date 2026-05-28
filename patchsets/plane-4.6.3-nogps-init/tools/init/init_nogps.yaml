@@ -27,8 +27,8 @@ position:
 # Current wind. (0, 0) is acceptable when unknown but velocity tracking
 # will degrade in flight.
 wind:
-  speed_ms:  0.0                # m/s
-  direction_deg: 0.0            # 0 = from N, clockwise (standard met)
+  speed_ms: 5.52  # m/s
+  direction_deg: 312.0  # 0 = from N, clockwise (standard met)
 
 # Timing between commands. Conservative defaults for slow links.
 delays_s:
