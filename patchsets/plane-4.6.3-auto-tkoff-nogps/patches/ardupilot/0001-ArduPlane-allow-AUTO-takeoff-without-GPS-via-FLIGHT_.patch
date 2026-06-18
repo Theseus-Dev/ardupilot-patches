@@ -1,0 +1,72 @@
+From b5a9c77a364bc6bff1071abde85d70f3529c57b2 Mon Sep 17 00:00:00 2001
+From: Ian Laffey <ian@theseus.us>
+Date: Wed, 17 Jun 2026 18:43:13 -0700
+Subject: [PATCH] ArduPlane: allow AUTO takeoff without GPS via FLIGHT_OPTIONS
+ bit 15
+
+The AUTO NAV_TAKEOFF launch detector (auto_takeoff_check) refuses to
+unsuppress throttle until the GPS reports a 3D fix. For no-GPS launch
+profiles where a companion computer supplies position shortly after the
+aircraft is airborne (e.g. visual navigation), this hard gate prevents
+AUTO takeoff entirely even though FBWA launch works fine.
+
+Add FLIGHT_OPTIONS bit 15 (ALLOW_AUTO_TKOFF_NO_GPS). When set, the GPS
+3D-fix early-return in auto_takeoff_check() is skipped, so launch is
+detected from the existing acceleration (TKOFF_THR_MINACC) and timer
+logic. With TKOFF_THR_MINSPD=0 (default) the ground-speed trigger term
+is already satisfied without GPS.
+
+verify_takeoff() needs no change: without a GPS course lock it already
+falls back to update_level_flight(), giving a wings-level climb to the
+takeoff altitude (baro-relative). Default behaviour is unchanged when
+the bit is clear.
+---
+ ArduPlane/Parameters.cpp | 1 +
+ ArduPlane/defines.h      | 1 +
+ ArduPlane/takeoff.cpp    | 6 ++++--
+ 3 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/ArduPlane/Parameters.cpp b/ArduPlane/Parameters.cpp
+index 3dc58e5e3c..ce2b0078f3 100644
+--- a/ArduPlane/Parameters.cpp
++++ b/ArduPlane/Parameters.cpp
+@@ -1125,6 +1125,7 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
+     // @Bitmask: 12: Enable FBWB style loiter altitude control
+     // @Bitmask: 13: Indicate takeoff waiting for neutral rudder with flight control surfaces
+     // @Bitmask: 14: In AUTO - climb to next waypoint altitude immediately instead of linear climb
++    // @Bitmask: 15: Allow AUTO takeoff without a GPS 3D fix (companion-provided position expected after launch)
+     // @User: Advanced
+     AP_GROUPINFO("FLIGHT_OPTIONS", 13, ParametersG2, flight_options, 0),
+ 
+diff --git a/ArduPlane/defines.h b/ArduPlane/defines.h
+index 766935cff0..d210e6ab33 100644
+--- a/ArduPlane/defines.h
++++ b/ArduPlane/defines.h
+@@ -169,6 +169,7 @@ enum FlightOptions {
+     ENABLE_LOITER_ALT_CONTROL = (1<<12),
+     INDICATE_WAITING_FOR_RUDDER_NEUTRAL = (1<<13),
+     IMMEDIATE_CLIMB_IN_AUTO = (1<<14),
++    ALLOW_AUTO_TKOFF_NO_GPS = (1<<15),
+ };
+ 
+ enum CrowFlapOptions {
+diff --git a/ArduPlane/takeoff.cpp b/ArduPlane/takeoff.cpp
+index 35e71ba433..55bf4db3df 100644
+--- a/ArduPlane/takeoff.cpp
++++ b/ArduPlane/takeoff.cpp
+@@ -49,8 +49,10 @@ bool Plane::auto_takeoff_check(void)
+     }  
+ 
+     // Check for bad GPS
+-    if (gps.status() < AP_GPS::GPS_OK_FIX_3D) {
+-        // no auto takeoff without GPS lock
++    if (gps.status() < AP_GPS::GPS_OK_FIX_3D &&
++        !flight_option_enabled(FlightOptions::ALLOW_AUTO_TKOFF_NO_GPS)) {
++        // no auto takeoff without GPS lock, unless explicitly allowed by
++        // FLIGHT_OPTIONS bit 15 (e.g. companion provides position after launch)
+         return false;
+     }
+ 
+-- 
+2.34.1
+

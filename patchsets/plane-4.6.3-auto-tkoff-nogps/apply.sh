@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Apply the Plane 4.6.3 AUTO-takeoff-without-GPS patchset.
+#
+# Usage:
+#   ./apply.sh <ardupilot-dir> [<target-tag>]
+#
+# Examples:
+#   ./apply.sh /path/to/ardupilot Plane-4.6.3
+#   ./apply.sh /path/to/ardupilot                  # defaults to Plane-4.6.3
+set -euo pipefail
+
+AP_DIR="${1:?usage: $0 <ardupilot-dir> [<target-tag>]}"
+TARGET_TAG="${2:-Plane-4.6.3}"
+
+PATCH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cd "$AP_DIR"
+
+echo ">> Checking out $TARGET_TAG"
+git checkout "$TARGET_TAG"
+
+BRANCH="plane-4.6.3-auto-tkoff-nogps-$(date +%Y%m%d-%H%M%S)"
+echo ">> Creating branch $BRANCH"
+git checkout -b "$BRANCH"
+
+echo ">> Applying ardupilot patches"
+for p in "$PATCH_ROOT/patches/ardupilot/"*.patch; do
+    echo "   - $(basename "$p")"
+    git am --3way "$p"
+done
+
+total_patches=$(find "$PATCH_ROOT/patches" -name '*.patch' | wc -l | tr -d ' ')
+echo ""
+echo "Done. Commits added on top of $(git rev-parse --short HEAD~${total_patches})..HEAD:"
+git log --oneline "HEAD~${total_patches}..HEAD"
+echo ""
+echo "Next steps:"
+echo "  cd $AP_DIR"
+echo "  git submodule update --init --recursive"
+echo "  ./waf configure --board <your-board>"
+echo "  ./waf plane"

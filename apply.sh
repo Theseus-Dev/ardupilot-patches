@@ -11,10 +11,12 @@ Usage:
 
 Patchsets:
   plane-4.6.3-nogps-init
+  plane-4.6.3-auto-tkoff-nogps
   plane-4.3.8-mavlink-43003
 
 Examples:
   ./apply.sh plane-4.6.3-nogps-init /path/to/ardupilot Plane-4.6.3
+  ./apply.sh plane-4.6.3-auto-tkoff-nogps /path/to/ardupilot Plane-4.6.3
   ./apply.sh plane-4.3.8-mavlink-43003 /path/to/ardupilot Plane-4.3.8
 USAGE
 }
@@ -30,6 +32,9 @@ shift
 case "$PATCHSET" in
     plane-4.6.3-nogps-init)
         exec "$ROOT/patchsets/plane-4.6.3-nogps-init/apply.sh" "$@"
+        ;;
+    plane-4.6.3-auto-tkoff-nogps)
+        exec "$ROOT/patchsets/plane-4.6.3-auto-tkoff-nogps/apply.sh" "$@"
         ;;
     plane-4.3.8-mavlink-43003)
         exec "$ROOT/patchsets/plane-4.3.8-mavlink-43003/apply.sh" "$@"
